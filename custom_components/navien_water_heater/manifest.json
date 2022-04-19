@@ -12,5 +12,5 @@
   "codeowners": [
     "@nikshriv"
   ],
-  "iot_class": "cloud_poll"
+  "iot_class": "cloud_polling"
 }
