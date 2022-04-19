@@ -1,0 +1,6 @@
+
+{
+  "name": "Navien Water Heater Custom Integration",
+  "domains": ["water_heater","sensor"],
+  "render_readme": true
+}
