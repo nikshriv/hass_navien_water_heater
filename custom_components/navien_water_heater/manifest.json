@@ -1,0 +1,15 @@
+{
+  "domain": "navien_water_heater",
+  "name": "Navien NaviLink Water Heater Integration",
+  "config_flow": true,
+  "documentation": "https://www.github.com/nikshriv/hass_navien_water_heater",
+  "requirements": [],
+  "ssdp": [],
+  "zeroconf": [],
+  "homekit": {},
+  "dependencies": [],
+  "codeowners": [
+    "@nikshriv"
+  ],
+  "iot_class": "cloud_poll"
+}

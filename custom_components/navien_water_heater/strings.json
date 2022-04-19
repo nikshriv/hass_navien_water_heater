@@ -1,0 +1,22 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        },
+        "title": "NaviLink Credentials",
+        "description": "Please enter your NaviLink account credentials"
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid NaviLink user credentials",
+      "unknown": "Unknown error"
+    },
+    "abort": {
+      "reauth_successful": "Reauthorization successful",
+      "no_devices_available": "No devices available with the account credentials, aborting..."
+    }
+  }
+}
