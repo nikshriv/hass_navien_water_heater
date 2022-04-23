@@ -6,7 +6,8 @@ from homeassistant.core import HomeAssistant
 from datetime import timedelta
 import logging
 from .navien_api import (
-    NavienSmartControl
+    NavienSmartControl,
+    DeviceSorting
 )
 
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -25,9 +26,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Navien NaviLink Water Heater Integration from a config entry."""
 
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = entry.data
-    for devIndex in range(0,len(entry.data)):
-        hass.data[DOMAIN][entry.entry_id][devIndex]['coordinator'] = NaviLinkCoordinator(hass, entry.data[devIndex])
+    hass.data[DOMAIN][entry.entry_id] = {}
+    for channelInfo in entry.data:
+        hass.data[DOMAIN][entry.entry_id][bytes.hex(channelInfo["deviceID"])] = NaviLinkCoordinator(hass, channelInfo, entry.title.replace("navien_",""))
+        await hass.data[DOMAIN][entry.entry_id][bytes.hex(channelInfo["deviceID"])].async_config_entry_first_refresh()
     hass.config_entries.async_setup_platforms(entry, PLATFORMS)
 
     return True
@@ -43,27 +45,35 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 class NaviLinkCoordinator(DataUpdateCoordinator):
     """NaviLink coordinator."""
 
-    def __init__(self, hass, channelInfo):
+    def __init__(self, hass, channelInfo, username):
         """Initialize my coordinator."""
         super().__init__(
             hass,
             _LOGGER,
-            name="NaviLink" + "-" + str(channelInfo['gatewayID']) + "-" + channelInfo['controlChannelNum'],
+            name="NaviLink" + "-" + bytes.hex(channelInfo['deviceID']),
             update_interval=timedelta(seconds=60),
         )
-        self.device_config = channelInfo
-        self.navilink = NavienSmartControl(channelInfo["username"],"")
+        self.channelInfo = channelInfo
+        self.navilink = NavienSmartControl(username,"")
 
     async def _async_update_data(self):
         """Fetch data from API endpoint."""
-        deviceStates = []
+        deviceStates = {}
         try:
-            channelInfo = self.navilink.connect(self.device_config["gatewayID"])
-            for devNum in range(1,channelInfo["channel"][self.device_config["controlChannelNum"]]["deviceCount"] + 1):
-                state = self.navilink.sendStateRequest(channelInfo["deviceID"],int(self.device_config["controlChannelNum"]),devNum)
-                state = self.navilink.convertState(state)
-                deviceStates.append(state)
-            self.navilink.disconnect()
+            await self.navilink.connect(self.channelInfo["deviceID"])         
+            for channelNum in range(1,4):
+                if self.channelInfo["channel"][str(channelNum)]["deviceSorting"] != DeviceSorting.NO_DEVICE.value:
+                    for deviceNum in range(1,self.channelInfo["channel"][str(channelNum)]["deviceCount"] + 1):
+                        try:
+                            state = await self.navilink.sendStateRequest(self.channelInfo["deviceID"],channelNum,deviceNum)
+                            state = self.navilink.convertState(state,self.channelInfo["deviceTempFlag"])
+                            deviceStates[str(channelNum)][str(deviceNum)] = state
+                        except:
+                            pass
+            try:    
+                await self.navilink.disconnect()
+            except:
+                pass
             return deviceStates
         except:
             raise UpdateFailed

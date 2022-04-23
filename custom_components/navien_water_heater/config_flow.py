@@ -59,14 +59,9 @@ class NavienConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             for gateway in self.gateway_data:
                 try:
                     channelInfo = self.navien.connect(gateway["GID"])
-                    for chan in channelInfo["channel"]:
-                        if DeviceSorting(channelInfo["channel"][chan]["deviceSorting"]).name != DeviceSorting.NO_DEVICE.name:
-                            channelInfo['gatewayID'] = gateway["GID"]
-                            channelInfo['username'] = user_input["username"]
-                            channelInfo['controlChannelNum'] = str(chan)
-                            self.device_data.append(channelInfo)
+                    self.device_data.append(channelInfo)
                 except:
-                    pass
+                    return self.async_abort(reason="no_devices_available")
             title = 'navien_' + user_input['username']
             if len(self.device_data) > 0:
                 existing_entry = await self.async_set_unique_id(title)

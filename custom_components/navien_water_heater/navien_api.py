@@ -5,7 +5,8 @@ combi-boiler or boiler connected via NaviLink.
 Please refer to the documentation provided in the README.md,
 which can be found at https://github.com/rudybrian/PyNavienSmartControl/
 
-Note: "pip install requests" if getting import errors.
+This is a slightly modified version that uses async for easier integration with hass
+
 """
 
 __version__ = "1.0"
@@ -17,19 +18,16 @@ __license__ = "GPL"
 
 
 # Third party library
-import requests
+import aiohttp
 
-# We use raw sockets.
-import socket
+# We use asyncio for tcp i/o.
+import asyncio
 
 # We unpack structures.
 import struct
 
 # We use namedtuple to reduce index errors.
 import collections
-
-# We use binascii to convert some consts from hex.
-import binascii
 
 # We use Python enums.
 import enum
@@ -176,9 +174,6 @@ class AutoVivification(dict):
 class NavienSmartControl:
     """The main NavienSmartControl class"""
 
-    # This prevents the requests module from creating its own user-agent.
-    stealthyHeaders = {"User-Agent": None}
-
     # The Navien server.
     navienServer = "uscv2.naviensmartcontrol.com"
     navienWebServer = "https://" + navienServer
@@ -194,24 +189,21 @@ class NavienSmartControl:
         """
         self.userID = userID
         self.passwd = passwd
-        self.connection = None
+        self.reader = None
+        self.writer = None
 
-    def login(self):
+    async def login(self):
         """
         Login to the REST API
         
         :return: The REST API response
         """
-        response = requests.post(
-            NavienSmartControl.navienWebServer + "/api/requestDeviceList",
-            headers=NavienSmartControl.stealthyHeaders,
-            data={"userID": self.userID, "password": self.passwd},
-        )
+        async with aiohttp.ClientSession() as session:
+            async with session.post(NavienSmartControl.navienWebServer + "/api/requestDeviceList", json={"userID": self.userID, "password": self.passwd}) as response:
+                # If an error occurs this will raise it, otherwise it returns the gateway list.
+                return await self.handleResponse(response)
 
-        # If an error occurs this will raise it, otherwise it returns the gateway list.
-        return self.handleResponse(response)
-
-    def handleResponse(self, response):
+    async def handleResponse(self, response):
         """
         HTTP response handler
 
@@ -219,20 +211,10 @@ class NavienSmartControl:
         :return: The gateway list JSON in dictionary form
         """
         # We need to check for the HTTP response code before attempting to parse the data
-        if response.status_code != 200:
-            print(response.text)
-            response_data = json.loads(response.text)
-            if response_data["msg"] == "DB_ERROR":
-                # Credentials invalid or some other error
-                raise Exception(
-                    "Error: "
-                    + response_data["msg"]
-                    + ": Login details incorrect. Please note, these are case-sensitive."
-                )
-            else:
-                raise Exception("Error: " + response_data["msg"])
+        if response.status != 200:
+            raise Exception("Login error, please try again")
 
-        response_data = json.loads(response.text)
+        response_data = await response.json()
 
         try:
             response_data["data"]
@@ -242,7 +224,7 @@ class NavienSmartControl:
 
         return gateway_data
 
-    def connect(self, gatewayID):
+    async def connect(self, gatewayID):
         """
         Connect to the binary API service
         
@@ -250,31 +232,23 @@ class NavienSmartControl:
         :return: The response data (normally a channel information response)
         """
 
-        # Construct a socket object.
-        self.connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-        # Connect to the socket server.
-        self.connection.connect(
-            (NavienSmartControl.navienServer, NavienSmartControl.navienServerSocketPort)
-        )
-
-        # Send the initial connection details
-        self.connection.sendall(
-            (self.userID + "$" + "iPhone1.0" + "$" + gatewayID).encode()
-        )
+        self.reader, self.writer = await asyncio.open_connection(NavienSmartControl.navienServer, NavienSmartControl.navienServerSocketPort)
+        self.writer.write((self.userID + "$" + "iPhone1.0" + "$" + gatewayID).encode())
+        await self.writer.drain()
 
         # Receive the status.
-        data = self.connection.recv(1024)
+        data = await self.reader.read(1024)
 
         # Return the parsed data.
         return self.parseResponse(data)
         
-    def disconnect(self):
+    async def disconnect(self):
         """
         Disconnect the from the API
         """
-        if (self.connection is not None):
-            self.connection.close()
+        if (self.writer):
+            self.writer.close()
+            await self.writer.wait_closed()
 
     def parseResponse(self, data):
         """
@@ -661,7 +635,7 @@ class NavienSmartControl:
         littleHexStr = "".join("%02x" % b for b in littleHex)
         return int(littleHexStr, 16)
 
-    def sendRequest(
+    async def sendRequest(
         self,
         gatewayID,
         currentControlChannel,
@@ -754,10 +728,11 @@ class NavienSmartControl:
         )
 
         # We should ensure that the socket is still connected, and abort if not
-        self.connection.sendall(sendData)
+        self.writer.write(sendData)
+        await self.writer.drain()
 
         # Receive the status.
-        data = self.connection.recv(1024)
+        data = await self.reader.read(1024)
         return self.parseResponse(data)
 
     def initWeeklyDay(self):
@@ -777,7 +752,7 @@ class NavienSmartControl:
 
     # ----- Convenience methods for sending requests ----- #
 
-    def sendStateRequest(self, gatewayID, currentControlChannel, deviceNumber):
+    async def sendStateRequest(self, gatewayID, currentControlChannel, deviceNumber):
         """
         Send state request
         
@@ -786,7 +761,7 @@ class NavienSmartControl:
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :return: Parsed response data
         """
-        return self.sendRequest(
+        return await self.sendRequest(
             gatewayID,
             currentControlChannel,
             deviceNumber,
@@ -797,7 +772,7 @@ class NavienSmartControl:
             self.initWeeklyDay(),
         )
 
-    def sendChannelInfoRequest(self, gatewayID, currentControlChannel, deviceNumber):
+    async def sendChannelInfoRequest(self, gatewayID, currentControlChannel, deviceNumber):
         """
         Send channel information request (we already get this when we log in)
         
@@ -806,7 +781,7 @@ class NavienSmartControl:
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :return: Parsed response data
         """
-        return self.sendRequest(
+        return await self.sendRequest(
             gatewayID,
             currentControlChannel,
             deviceNumber,
@@ -817,7 +792,7 @@ class NavienSmartControl:
             self.initWeeklyDay(),
         )
 
-    def sendTrendSampleRequest(self, gatewayID, currentControlChannel, deviceNumber):
+    async def sendTrendSampleRequest(self, gatewayID, currentControlChannel, deviceNumber):
         """
         Send trend sample request
         
@@ -826,7 +801,7 @@ class NavienSmartControl:
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :return: Parsed response data
         """
-        return self.sendRequest(
+        return await self.sendRequest(
             gatewayID,
             currentControlChannel,
             deviceNumber,
@@ -837,7 +812,7 @@ class NavienSmartControl:
             self.initWeeklyDay(),
         )
 
-    def sendTrendMonthRequest(self, gatewayID, currentControlChannel, deviceNumber):
+    async def sendTrendMonthRequest(self, gatewayID, currentControlChannel, deviceNumber):
         """
         Send trend month request
         
@@ -846,7 +821,7 @@ class NavienSmartControl:
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :return: Parsed response data
         """
-        return self.sendRequest(
+        return await self.sendRequest(
             gatewayID,
             currentControlChannel,
             deviceNumber,
@@ -857,7 +832,7 @@ class NavienSmartControl:
             self.initWeeklyDay(),
         )
 
-    def sendTrendYearRequest(self, gatewayID, currentControlChannel, deviceNumber):
+    async def sendTrendYearRequest(self, gatewayID, currentControlChannel, deviceNumber):
         """
         Send trend year request
         
@@ -866,7 +841,7 @@ class NavienSmartControl:
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :return: Parsed response data
         """
-        return self.sendRequest(
+        return await self.sendRequest(
             gatewayID,
             currentControlChannel,
             deviceNumber,
@@ -877,7 +852,7 @@ class NavienSmartControl:
             self.initWeeklyDay(),
         )
 
-    def sendPowerControlRequest(
+    async def sendPowerControlRequest(
         self, gatewayID, currentControlChannel, deviceNumber, powerState
     ):
         """
@@ -889,7 +864,7 @@ class NavienSmartControl:
         :param powerState: The power state as identified in the OnOFFFlag enum
         :return: Parsed response data
         """
-        return self.sendRequest(
+        return await self.sendRequest(
             gatewayID,
             currentControlChannel,
             deviceNumber,
@@ -900,7 +875,7 @@ class NavienSmartControl:
             self.initWeeklyDay(),
         )
 
-    def sendHeatControlRequest(
+    async def sendHeatControlRequest(
         self, gatewayID, currentControlChannel, deviceNumber, channelData, heatState
     ):
         """
@@ -924,7 +899,7 @@ class NavienSmartControl:
         ):
             raise Exception("Error: Heat is disabled.")
         else:
-            return self.sendRequest(
+            return await self.sendRequest(
                 gatewayID,
                 currentControlChannel,
                 deviceNumber,
@@ -935,7 +910,7 @@ class NavienSmartControl:
                 self.initWeeklyDay(),
             )
 
-    def sendOnDemandControlRequest(
+    async def sendOnDemandControlRequest(
         self, gatewayID, currentControlChannel, deviceNumber, channelData
     ):
         """
@@ -960,7 +935,7 @@ class NavienSmartControl:
         ):
             raise Exception("Error: Recirculation is disabled.")
         else:
-            return self.sendRequest(
+            return await self.sendRequest(
                 gatewayID,
                 currentControlChannel,
                 deviceNumber,
@@ -971,7 +946,7 @@ class NavienSmartControl:
                 self.initWeeklyDay(),
             )
 
-    def sendDeviceWeeklyControlRequest(
+    async def sendDeviceWeeklyControlRequest(
         self, gatewayID, currentControlChannel, deviceNumber, weeklyState
     ):
         """
@@ -984,7 +959,7 @@ class NavienSmartControl:
         :return: Parsed response data
 
         """
-        return self.sendRequest(
+        return await self.sendRequest(
             gatewayID,
             currentControlChannel,
             deviceNumber,
@@ -995,7 +970,7 @@ class NavienSmartControl:
             self.initWeeklyDay(),
         )
 
-    def sendWaterTempControlRequest(
+    async def sendWaterTempControlRequest(
         self, gatewayID, currentControlChannel, deviceNumber, tempVal
     ):
         """
@@ -1008,7 +983,7 @@ class NavienSmartControl:
         :param tempVal: The temperature to set
         :return: Parsed response data
         """
-        return self.sendRequest(
+        return await self.sendRequest(
             gatewayID,
             currentControlChannel,
             deviceNumber,
@@ -1019,7 +994,7 @@ class NavienSmartControl:
             self.initWeeklyDay(),
         )
 
-    def sendHeatingWaterTempControlRequest(
+    async def sendHeatingWaterTempControlRequest(
         self, gatewayID, currentControlChannel, deviceNumber, channelData, tempVal
     ):
         """
@@ -1056,7 +1031,7 @@ class NavienSmartControl:
         ):
             raise Exception("Error: Invalid tempVal requested.")
         else:
-            return self.sendRequest(
+            return await self.sendRequest(
                 gatewayID,
                 currentControlChannel,
                 deviceNumber,
@@ -1067,7 +1042,7 @@ class NavienSmartControl:
                 self.initWeeklyDay(),
             )
 
-    def sendRecirculationTempControlRequest(
+    async def sendRecirculationTempControlRequest(
         self, gatewayID, currentControlChannel, deviceNumber, channelData, tempVal
     ):
         """
@@ -1106,7 +1081,7 @@ class NavienSmartControl:
         ):
             raise Exception("Error: Invalid tempVal requested.")
         else:
-            return self.sendRequest(
+            return await self.sendRequest(
                 gatewayID,
                 currentControlChannel,
                 deviceNumber,
@@ -1118,7 +1093,7 @@ class NavienSmartControl:
             )
 
     # Send request to set weekly schedule
-    def sendDeviceControlWeeklyScheduleRequest(self, stateData, WeeklyDay, action):
+    async def sendDeviceControlWeeklyScheduleRequest(self, stateData, WeeklyDay, action):
         """
         Send request to set weekly schedule
         
@@ -1224,7 +1199,7 @@ class NavienSmartControl:
             raise Exception("Error: unsupported action " + action)
 
         # print(json.dumps(tmpWeeklyDay, indent=2, default=str))
-        return self.sendRequest(
+        return await self.sendRequest(
             stateData["deviceID"],
             stateData["currentChannel"],
             stateData["deviceNumber"],
@@ -1311,18 +1286,4 @@ class NavienSmartControl:
         stateData["powerStatus"] = OnOFFFlag(stateData["powerStatus"]).value < 2
         stateData["useOnDemand"] = OnDemandFlag(stateData["useOnDemand"]).name
         stateData["weeklyControl"] = OnOFFFlag(stateData["weeklyControl"]).value < 2
-
-
-    def convertChannelInformation(self, channelInformation):
-        """
-        Return Channel Information response data after conversion
-        
-        :param responseData: The parsed channel information response data
-        """
-        for chan in range(1, len(channelInformation["channel"]) + 1):
-            channelInformation["channel"][str(chan)]["deviceSorting"] = DeviceSorting(channelInformation["channel"][str(chan)]["deviceSorting"]).name
-            channelInformation["channel"][str(chan)]["deviceTempFlag"] = TemperatureType(channelInformation["channel"][str(chan)]["deviceTempFlag"]).name
-            channelInformation["channel"][str(chan)]["useOnDemand"] = OnDemandFlag(channelInformation["channel"][str(chan)]["useOnDemand"]).name
-            channelInformation["hotwaterPossibility"] = NFBWaterFlag((channelInformation["channel"][str(chan)]["wwsdFlag"] & WWSDMask.HOTWATER_POSSIBILITY.value) > 0).value
-            channelInformation["recirculationPossibility"] = RecirculationFlag((channelInformation["channel"][str(chan)]["wwsdFlag"] & WWSDMask.RECIRCULATION_POSSIBILITY.value) > 0).value
-            channelInformation["channel"][str(chan)]["useWarmWater"] = OnOFFFlag(channelInformation["channel"][str(chan)]["useWarmWater"]).value < 2
+        return stateData

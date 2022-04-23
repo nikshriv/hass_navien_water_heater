@@ -2,7 +2,6 @@
 import logging
 
 from homeassistant.components.water_heater import (
-    STATE_GAS,
     WaterHeaterEntity,
     WaterHeaterEntityFeature,
 )
@@ -14,7 +13,9 @@ from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity
 )
 from .navien_api import (
-    NavienSmartControl
+    NavienSmartControl,
+    DeviceSorting,
+    TemperatureType
 )
 
 from .const import DOMAIN
@@ -30,40 +31,39 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     """Set up Navien water heater based on a config entry."""
-    device_data = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        [
-            NavienWaterHeaterEntity(channel_data)
-            for channel_data in device_data
-        ],
-    )
+    coordinators = hass.data[DOMAIN][entry.entry_id]
+    username = entry.title.replace("navien_","")
+    devices = []
+    for channelInfo in hass.data:
+        for channelNum in range(1,4):
+            if channelInfo["channel"][str[channelNum]]["deviceSorting"] != DeviceSorting.NO_DEVICE.value:
+                devices.append(NavienWaterHeaterEntity(username, channelInfo, channelNum, coordinators[bytes.hex(channelInfo["deviceID"])]))
+    async_add_entities(devices)
 
 
 class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     """Define a Navien water heater."""
  
-    def __init__(self, channel_data):
+    def __init__(self, username, channelInfo, channelNum, coordinator):
         """Pass coordinator to CoordinatorEntity."""
-        super().__init__(channel_data['coordinator'])
-        self.gatewayID_bytes = channel_data["deviceID"]
-        self.gatewayID_str = channel_data['gatewayID']
-        self.channel = channel_data["controlChannelNum"]
+        super().__init__(coordinator)
         self.deviceNum = 1
-        self.navien = NavienSmartControl(channel_data["username",""])
-        self.channel_data = self.navien.convertChannelInformation(channel_data)["channel"][self.channel]
-        self.state = self.coordinator.data[0]
+        self.navien = NavienSmartControl(username)
+        self.channelNum = channelNum
+        self.channelInfo = channelInfo
+        self.state = self.coordinator.data[str(channelNum)][str(self.deviceNum)]
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        self.state = self.coordinator.data[0]
+        self.state = self.coordinator.data[str(self.channelNum)][str(self.deviceNum)]
         self.async_write_ha_state()
 
     @property
     def temperature_unit(self):
         """Return temperature unit."""
         temp_unit = TEMP_CELCIUS
-        if self.channel_data["deviceTempFlag"] == 'FARENHEIT':
+        if self.channelInfo["channel"][str(self.channelNum)]["deviceTempFlag"] == TemperatureType.FAHRENHEIT.value:
             temp_unit = TEMP_FARENHEIT
 
         return temp_unit
@@ -81,7 +81,7 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     @property
     def current_temperature(self):
         """Return the temperature we try to reach."""
-        return self.state["hotWaterCurrentTemperature"]
+        return self.state["hotWaterTemperature"]
 
     @property
     def target_temperature(self):
@@ -91,34 +91,34 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     @property
     def min_temp(self):
         """Return the minimum temperature."""
-        return self.channel_data["minimumSettingWaterTemperature"]
+        return self.channelInfo["channel"][str(self.channelNum)]["minimumSettingWaterTemperature"]
 
     @property
     def max_temp(self):
         """Return the maximum temperature."""
-        return self.channel_data["maximumSettingWaterTemperature"]
+        return self.channelInfo["channel"][str(self.channelNum)]["maximumSettingWaterTemperature"]
 
     async def async_set_temperature(self,**kwargs):
         """Set target water temperature"""
         if (target_temp := kwargs.get(ATTR_TEMPERATURE)) is not None:
-            self.navien.connect(self.gatewayID_str)
-            self.navien.sendWaterTempControlRequest(self.gatewayID_bytes,int(self.channel),self.deviceNum,target_temp)
-            self.navien.disconnect()
+            await self.navien.connect(bytes.hex(self.channelInfo["deviceID"]))
+            await self.navien.sendWaterTempControlRequest(self.channelInfo["deviceID"],self.channelNum,self.deviceNum,target_temp)
+            await self.navien.disconnect()
             await self.coordinator.async_request_refresh()
         else:
             _LOGGER.error("A target temperature must be provided")
 
     async def async_turn_away_mode_on(self):
         """Turn away mode on."""
-        self.navien.connect(self.gatewayID_str)
-        self.navien.sendPowerControlRequest(self.gatewayID_bytes,int(self.channel),self.deviceNum,2)
-        self.navien.disconnect()
+        await self.navien.connect(bytes.hex(self.channelInfo["deviceID"]))
+        await self.navien.sendPowerControlRequest(self.channelInfo["deviceID"],self.channelNum,self.deviceNum,2)
+        await self.navien.disconnect()
         await self.coordinator.async_request_refresh()
 
 
     async def async_turn_away_mode_off(self):
         """Turn away mode off."""
-        self.navien.connect(self.gatewayID_str)
-        self.navien.sendPowerControlRequest(self.gatewayID_bytes,int(self.channel),self.deviceNum,1)
-        self.navien.disconnect()
+        await self.navien.connect(bytes.hex(self.channelInfo["deviceID"]))
+        await self.navien.sendPowerControlRequest(self.channelInfo["deviceID"],self.channelNum,self.deviceNum,1)
+        await self.navien.disconnect()
         await self.coordinator.async_request_refresh()
