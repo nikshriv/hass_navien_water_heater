@@ -49,7 +49,7 @@ class NavienConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         try:
             self.navien = NavienSmartControl(user_input['username'],user_input['password'])
-            self.gateway_data = self.navien.login()
+            self.gateway_data = await self.navien.login()
         except InvalidAuth:
             errors["base"] = "invalid_auth"
         except Exception:  # pylint: disable=broad-except
@@ -58,7 +58,7 @@ class NavienConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         else:
             for gateway in self.gateway_data:
                 try:
-                    channelInfo = self.navien.connect(gateway["GID"])
+                    channelInfo = await self.navien.connect(gateway["GID"])
                     self.device_data.append(channelInfo)
                 except:
                     return self.async_abort(reason="no_devices_available")
