@@ -36,6 +36,7 @@ async def async_setup_entry(
     coordinators = hass.data[DOMAIN][entry.entry_id]
     username = entry.title.replace("navien_","")
     devices = []
+    _LOGGER.exception(entry.data)
     for gatewayID in entry.data.keys():
         channelInfo = entry.data[gatewayID]
         _LOGGER.exception(gatewayID, channelInfo)
