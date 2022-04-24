@@ -66,7 +66,7 @@ class NaviLinkCoordinator(DataUpdateCoordinator):
                 if self.channelInfo["channel"][str(channelNum)]["deviceSorting"] != DeviceSorting.NO_DEVICE.value:
                     for deviceNum in range(1,self.channelInfo["channel"][str(channelNum)]["deviceCount"] + 1):
                         try:
-                            state = await self.navilink.sendStateRequest(self.channelInfo["deviceID"],channelNum,deviceNum)
+                            state = await self.navilink.sendStateRequest(self.gatewayID, channelNum, deviceNum)
                             state = self.navilink.convertState(state,self.channelInfo["deviceTempFlag"])
                             deviceStates[str(channelNum)][str(deviceNum)] = state
                         except:
