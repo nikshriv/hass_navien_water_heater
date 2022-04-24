@@ -37,20 +37,21 @@ async def async_setup_entry(
     for gatewayID, channelInfo in entry.data:
         for channelNum in range(1,4):
             if channelInfo["channel"][str[channelNum]]["deviceSorting"] != DeviceSorting.NO_DEVICE.value:
-                devices.append(NavienWaterHeaterEntity(username, channelInfo, channelNum, coordinators[gatewayID]))
+                devices.append(NavienWaterHeaterEntity(username, gatewayID, channelInfo, channelNum, coordinators[gatewayID]))
     async_add_entities(devices)
 
 
 class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     """Define a Navien water heater."""
  
-    def __init__(self, username, channelInfo, channelNum, coordinator):
+    def __init__(self, username, gatewayID, channelInfo, channelNum, coordinator):
         """Pass coordinator to CoordinatorEntity."""
         super().__init__(coordinator)
         self.deviceNum = 1
         self.navien = NavienSmartControl(username)
         self.channelNum = channelNum
         self.channelInfo = channelInfo
+        self.gatewayID = gatewayID
         self.state = self.coordinator.data[str(channelNum)][str(self.deviceNum)]
 
     @callback
@@ -101,8 +102,8 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     async def async_set_temperature(self,**kwargs):
         """Set target water temperature"""
         if (target_temp := kwargs.get(ATTR_TEMPERATURE)) is not None:
-            await self.navien.connect(bytes.hex(self.channelInfo["deviceID"]))
-            await self.navien.sendWaterTempControlRequest(self.channelInfo["deviceID"],self.channelNum,self.deviceNum,target_temp)
+            await self.navien.connect(self.gatewayID)
+            await self.navien.sendWaterTempControlRequest(self.gatewayID,self.channelNum,self.deviceNum,target_temp)
             await self.navien.disconnect()
             await self.coordinator.async_request_refresh()
         else:
@@ -110,15 +111,15 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
 
     async def async_turn_away_mode_on(self):
         """Turn away mode on."""
-        await self.navien.connect(bytes.hex(self.channelInfo["deviceID"]))
-        await self.navien.sendPowerControlRequest(self.channelInfo["deviceID"],self.channelNum,self.deviceNum,2)
+        await self.navien.connect(self.gatewayID)
+        await self.navien.sendPowerControlRequest(self.gatewayID,self.channelNum,self.deviceNum,2)
         await self.navien.disconnect()
         await self.coordinator.async_request_refresh()
 
 
     async def async_turn_away_mode_off(self):
         """Turn away mode off."""
-        await self.navien.connect(bytes.hex(self.channelInfo["deviceID"]))
-        await self.navien.sendPowerControlRequest(self.channelInfo["deviceID"],self.channelNum,self.deviceNum,1)
+        await self.navien.connect(self.gatewayID)
+        await self.navien.sendPowerControlRequest(self.gatewayID,self.channelNum,self.deviceNum,1)
         await self.navien.disconnect()
         await self.coordinator.async_request_refresh()

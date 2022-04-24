@@ -272,9 +272,6 @@ class NavienSmartControl:
         commonResponseData = commonResponseColumns._make(
             struct.unpack("8s B B B B", data[:12])
         )
-
-        # print("Device ID: " + "".join("%02x" % b for b in commonResponseData.deviceID))
-
         # Based on the controlType, parse the response accordingly
         if commonResponseData.controlType == ControlType.CHANNEL_INFORMATION.value:
             retval = self.parseChannelInformationResponse(commonResponseData, data)
@@ -381,6 +378,7 @@ class NavienSmartControl:
                     channelResponseData[str(x + 1)] = tmpChannelResponseData._asdict()
             tmpChannelResponseData = {"channel": channelResponseData}
             result = dict(commonResponseData._asdict(), **tmpChannelResponseData)
+            result["deviceID"] = bytes.hex(result["deviceID"])
             return result
         else:
             raise Exception(
@@ -479,6 +477,7 @@ class NavienSmartControl:
         result = dict(stateResponseData._asdict(), **tmpDaySequences)
         result.update(stateResponseData2._asdict())
         result.update(commonResponseData._asdict())
+        result["deviceID"] = bytes.hex(result["deviceID"])
         return result
 
     def parseTrendSampleResponse(self, commonResponseData, data):
@@ -678,6 +677,8 @@ class NavienSmartControl:
                 requestHeader["dSid"],
             ]
         )
+        if type(gatewayID) == str:
+            gatewayID = bytes.fromhex(gatewayID)
         sendData.extend(gatewayID)
         sendData.extend(
             [
@@ -1282,7 +1283,10 @@ class NavienSmartControl:
                 DeviceSorting.CAS_NVW.value,
             ]:
                 stateData["hotWaterFlowRate"] = round((self.bigHexToInt(stateData["hotWaterFlowRate"]) / 3.785) / 10.0, 1)
-                
+
+        stateData["controllerVersion"] = self.bigHexToInt(stateData["controllerVersion"])
+        stateData["pannelVersion"] = self.bigHexToInt(stateData["pannelVersion"])
+        stateData["errorCD"] = self.bigHexToInt(stateData["errorCD"])       
         stateData["powerStatus"] = OnOFFFlag(stateData["powerStatus"]).value < 2
         stateData["useOnDemand"] = OnDemandFlag(stateData["useOnDemand"]).name
         stateData["weeklyControl"] = OnOFFFlag(stateData["weeklyControl"]).value < 2
