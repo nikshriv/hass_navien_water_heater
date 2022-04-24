@@ -27,9 +27,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {}
-    for channelInfo in entry.data:
-        hass.data[DOMAIN][entry.entry_id][bytes.hex(channelInfo["deviceID"])] = NaviLinkCoordinator(hass, channelInfo, entry.title.replace("navien_",""))
-        await hass.data[DOMAIN][entry.entry_id][bytes.hex(channelInfo["deviceID"])].async_config_entry_first_refresh()
+    for gatewayID,channelInfo in entry.data.items():
+        hass.data[DOMAIN][entry.entry_id][gatewayID] = NaviLinkCoordinator(hass, gatewayID, channelInfo, entry.title.replace("navien_",""))
+        await hass.data[DOMAIN][entry.entry_id][gatewayID].async_config_entry_first_refresh()
     hass.config_entries.async_setup_platforms(entry, PLATFORMS)
 
     return True
@@ -45,22 +45,23 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 class NaviLinkCoordinator(DataUpdateCoordinator):
     """NaviLink coordinator."""
 
-    def __init__(self, hass, channelInfo, username):
+    def __init__(self, hass, gatewayID, channelInfo, username):
         """Initialize my coordinator."""
         super().__init__(
             hass,
             _LOGGER,
-            name="NaviLink" + "-" + bytes.hex(channelInfo['deviceID']),
+            name="NaviLink" + "-" + gatewayID,
             update_interval=timedelta(seconds=60),
         )
         self.channelInfo = channelInfo
+        self.gatewayID = gatewayID
         self.navilink = NavienSmartControl(username,"")
 
     async def _async_update_data(self):
         """Fetch data from API endpoint."""
         deviceStates = {}
         try:
-            await self.navilink.connect(self.channelInfo["deviceID"])         
+            await self.navilink.connect(self.gatewayID)         
             for channelNum in range(1,4):
                 if self.channelInfo["channel"][str(channelNum)]["deviceSorting"] != DeviceSorting.NO_DEVICE.value:
                     for deviceNum in range(1,self.channelInfo["channel"][str(channelNum)]["deviceCount"] + 1):
