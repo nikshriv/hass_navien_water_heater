@@ -36,7 +36,8 @@ async def async_setup_entry(
     coordinators = hass.data[DOMAIN][entry.entry_id]
     username = entry.title.replace("navien_","")
     devices = []
-    for gatewayID, channelInfo in entry.data.items():
+    for gatewayID in entry.data.keys():
+        channelInfo = entry.data[gatewayID]
         _LOGGER.exception(gatewayID, channelInfo)
         for channelNum in range(1,4):
             if channelInfo["channel"][str[channelNum]]["deviceSorting"] > 0:
