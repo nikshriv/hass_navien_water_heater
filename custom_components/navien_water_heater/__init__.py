@@ -28,6 +28,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {}
     for gatewayID,channelInfo in entry.data.items():
+        _LOGGER.exception(gatewayID,channelInfo)
         hass.data[DOMAIN][entry.entry_id][gatewayID] = NaviLinkCoordinator(hass, gatewayID, channelInfo, entry.title.replace("navien_",""))
         await hass.data[DOMAIN][entry.entry_id][gatewayID].async_config_entry_first_refresh()
     hass.config_entries.async_setup_platforms(entry, PLATFORMS)
