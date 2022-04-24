@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, STATE_OFF, TEMP_CELSIUS, TEMP_FAHRENHEIT
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity
 )
@@ -55,6 +56,30 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
         self.gatewayID = gatewayID
         self.state = self.coordinator.data[str(channelNum)][str(self.deviceNum)]
 
+    @property
+    def available(self):
+        """Return if the the device is online or not."""
+        return True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device registry information for this entity."""
+        return DeviceInfo(
+            identifiers = {(DOMAIN, self.gatewayID + "-" + str(self.channelNum))},
+            manufacturer = "Navien",
+            name = DeviceSorting(self.channelInfo["channel"][str(self.channelNum)]["deviceSorting"]).name + str(self.channelNum),
+        )
+
+    @property
+    def name(self):
+        """Return the name of the entity."""
+        return "Navien " + DeviceSorting(self.channelInfo["channel"][str(self.channelNum)]["deviceSorting"]).name + " Channel " + str(self.channelNum)
+
+    @property
+    def unique_id(self):
+        """Return the unique ID of the entity."""
+        return self.gatewayID + "-" + str(self.channelNum) + "-" + str(self.deviceNum)
+
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
@@ -64,9 +89,9 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     @property
     def temperature_unit(self):
         """Return temperature unit."""
-        temp_unit = TEMP_CELCIUS
+        temp_unit = TEMP_CELSIUS
         if self.channelInfo["channel"][str(self.channelNum)]["deviceTempFlag"] == TemperatureType.FAHRENHEIT.value:
-            temp_unit = TEMP_FARENHEIT
+            temp_unit = TEMP_FAHRENHEIT
 
         return temp_unit
 
