@@ -32,7 +32,7 @@ class NavienConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self):
         self.navien = None
         self.gateway_data = None
-        self.device_data = []
+        self.device_data = {}
 
     VERSION = 1
 
@@ -59,7 +59,7 @@ class NavienConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             for gateway in self.gateway_data:
                 try:
                     channelInfo = await self.navien.connect(gateway["GID"])
-                    self.device_data.append(channelInfo)
+                    self.device_data[gateway["GID"]] = channelInfo
                 except:
                     return self.async_abort(reason="no_devices_available")
             title = 'navien_' + user_input['username']
