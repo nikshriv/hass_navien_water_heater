@@ -37,7 +37,7 @@ async def async_setup_entry(
     username = entry.title.replace("navien_","")
     devices = []
     for gatewayID, channelInfo in entry.data.items():
-        print(gatewayID, channelInfo)
+        _LOGGER.exception(gatewayID, channelInfo)
         for channelNum in range(1,4):
             if channelInfo["channel"][str[channelNum]]["deviceSorting"] > 0:
                 devices.append(NavienWaterHeaterEntity(username, gatewayID, channelInfo, channelNum, coordinators[gatewayID]))
