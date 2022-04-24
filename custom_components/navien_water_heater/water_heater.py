@@ -36,7 +36,7 @@ async def async_setup_entry(
     coordinators = hass.data[DOMAIN][entry.entry_id]
     username = entry.title.replace("navien_","")
     devices = []
-    for gatewayID, channelInfo in entry.data:
+    for gatewayID, channelInfo in entry.data.items():
         for channelNum in range(1,4):
             if channelInfo["channel"][str[channelNum]]["deviceSorting"] != DeviceSorting.NO_DEVICE.value:
                 devices.append(NavienWaterHeaterEntity(username, gatewayID, channelInfo, channelNum, coordinators[gatewayID]))
