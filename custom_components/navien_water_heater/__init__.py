@@ -26,11 +26,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Navien NaviLink Water Heater Integration from a config entry."""
 
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id]["coordinators"] = {}
-    hass.data[DOMAIN][entry.entry_id]["data"] = entry.data
+    hass.data[DOMAIN][entry.entry_id] = entry.data
     for gatewayID,channelInfo in hass.data[DOMAIN][entry.entry_id]["data"].items():
-        hass.data[DOMAIN][entry.entry_id]["coordinators"][gatewayID] = NaviLinkCoordinator(hass, gatewayID, channelInfo, entry.title.replace("navien_",""))
-        await hass.data[DOMAIN][entry.entry_id]["coordinators"][gatewayID].async_config_entry_first_refresh()
+        hass.data[DOMAIN][entry.entry_id][gatewayID]["coordinator"] = NaviLinkCoordinator(hass, gatewayID, channelInfo, entry.title.replace("navien_",""))
+        await hass.data[DOMAIN][entry.entry_id][gatewayID]["coordinator"].async_config_entry_first_refresh()
     hass.config_entries.async_setup_platforms(entry, PLATFORMS)
 
     return True
