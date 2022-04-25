@@ -59,6 +59,7 @@ class NavienConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 try:
                     channelInfo = await self.navien.connect(gateway["GID"])
                     self.device_data[gateway["GID"]] = channelInfo
+                    self.device_data[gateway["GID"]]["coordinator"] = {}
                 except:
                     return self.async_abort(reason="no_devices_available")
             title = 'navien_' + user_input['username']
