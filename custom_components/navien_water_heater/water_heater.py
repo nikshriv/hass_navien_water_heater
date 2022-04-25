@@ -33,14 +33,13 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     """Set up Navien water heater based on a config entry."""
-    coordinators = hass.data[DOMAIN][entry.entry_id]["coordinators"]
-    data = hass.data[DOMAIN][entry.entry_id]["data"]
+    data = hass.data[DOMAIN][entry.entry_id]
     username = entry.title.replace("navien_","")
     devices = []
     for gatewayID,channelInfo in data.items():
         for channelNum in range(1,4):
             if channelInfo["channel"][str[channelNum]]["deviceSorting"] > 0:
-                devices.append(NavienWaterHeaterEntity(username, gatewayID, channelInfo, channelNum, coordinators[gatewayID]))
+                devices.append(NavienWaterHeaterEntity(username, gatewayID, channelInfo, channelNum, data[gatewayID]["coordinator"]))
     async_add_entities(devices)
 
 
