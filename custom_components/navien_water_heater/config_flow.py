@@ -53,13 +53,11 @@ class NavienConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except InvalidAuth:
             errors["base"] = "invalid_auth"
         except Exception:  # pylint: disable=broad-except
-            _LOGGER.exception("Unexpected exception")
             errors["base"] = "unknown"
         else:
             for gateway in self.gateway_data:
                 try:
                     channelInfo = await self.navien.connect(gateway["GID"])
-                    _LOGGER.exception(type(channelInfo))
                     self.device_data[gateway["GID"]] = channelInfo
                 except:
                     return self.async_abort(reason="no_devices_available")
