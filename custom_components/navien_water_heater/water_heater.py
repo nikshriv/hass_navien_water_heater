@@ -39,16 +39,16 @@ async def async_setup_entry(
     for gatewayID,channelInfo in data.items():
         for channelNum in range(1,4):
             if channelInfo["channel"][str[channelNum]]["deviceSorting"] > 0:
-                devices.append(NavienWaterHeaterEntity(username, gatewayID, channelInfo, channelNum, data[gatewayID]["coordinator"]))
+                devices.append(NavienWaterHeaterEntity(username, gatewayID, channelInfo, channelNum))
     async_add_entities(devices)
 
 
 class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     """Define a Navien water heater."""
  
-    def __init__(self, username, gatewayID, channelInfo, channelNum, coordinator):
+    def __init__(self, username, gatewayID, channelInfo, channelNum):
         """Pass coordinator to CoordinatorEntity."""
-        super().__init__(coordinator)
+        super().__init__(channelInfo["coordinator"])
         self.deviceNum = 1
         self.navien = NavienSmartControl(username)
         self.channelNum = channelNum
