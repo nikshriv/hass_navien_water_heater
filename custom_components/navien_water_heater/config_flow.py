@@ -59,7 +59,7 @@ class NavienConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             for gateway in self.gateway_data:
                 try:
                     channelInfo = await self.navien.connect(gateway["GID"])
-                    _LOGGER.exception(channelInfo)
+                    _LOGGER.exception(channelInfo["GID"])
                     self.device_data[gateway["GID"]] = channelInfo
                 except:
                     return self.async_abort(reason="no_devices_available")
