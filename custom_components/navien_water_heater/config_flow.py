@@ -14,7 +14,6 @@ from homeassistant.exceptions import HomeAssistantError
 from .const import DOMAIN
 from .navien_api import (
     NavienSmartControl,
-    DeviceSorting,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -31,8 +30,6 @@ class NavienConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def __init__(self):
         self.navien = None
-        self.gateway_data = None
-        self.device_data = {}
 
     VERSION = 1
 
@@ -49,34 +46,19 @@ class NavienConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         try:
             self.navien = NavienSmartControl(user_input['username'],user_input['password'])
-            self.gateway_data = await self.navien.login()
-        except InvalidAuth:
-            errors["base"] = "invalid_auth"
+            await self.navien.login()
         except Exception:  # pylint: disable=broad-except
-            errors["base"] = "unknown"
+            errors["base"] = "invalid_auth"
         else:
-            for gateway in self.gateway_data:
-                try:
-                    channelInfo = await self.navien.connect(gateway["GID"])
-                    self.device_data[gateway["GID"]] = channelInfo
-                    self.device_data[gateway["GID"]]["coordinator"] = {}
-                except:
-                    return self.async_abort(reason="no_devices_available")
             title = 'navien_' + user_input['username']
-            if len(self.device_data) > 0:
-                existing_entry = await self.async_set_unique_id(title)
-                if not existing_entry:              
-                    return self.async_create_entry(title=title, data=self.device_data)
-                else:
-                    self.hass.config_entries.async_update_entry(existing_entry, data=self.device_data)
-                    await self.hass.config_entries.async_reload(existing_entry.entry_id)
-                    return self.async_abort(reason="reauth_successful")
+            existing_entry = await self.async_set_unique_id(title)
+            if not existing_entry:              
+                return self.async_create_entry(title=title, data={"username":user_input["username"],"password":user_input["password"]})
             else:
-                return self.async_abort(reason="no_devices_available")
+                self.hass.config_entries.async_update_entry(existing_entry, data={"username":user_input["username"],"password":user_input["password"]})
+                await self.hass.config_entries.async_reload(existing_entry.entry_id)
+                return self.async_abort(reason="reauth_successful")
 
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
         )
-
-class InvalidAuth(HomeAssistantError):
-    """Error to indicate there is invalid auth."""

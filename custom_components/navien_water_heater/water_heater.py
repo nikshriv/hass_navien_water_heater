@@ -17,7 +17,7 @@ from homeassistant.helpers.update_coordinator import (
 from .navien_api import (
     NavienSmartControl,
     DeviceSorting,
-    TemperatureType
+    TemperatureType,
 )
 
 from .const import DOMAIN
@@ -33,28 +33,28 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     """Set up Navien water heater based on a config entry."""
-    data = hass.data[DOMAIN][entry.entry_id]
-    username = entry.title.replace("navien_","")
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    navilink = NavienSmartControl(entry.data["username"],entry.data["password"])
     devices = []
-    for gatewayID,channelInfo in data.items():
-        for channelNum in range(1,4):
-            if channelInfo["channel"][str[channelNum]]["deviceSorting"] > 0:
-                devices.append(NavienWaterHeaterEntity(username, gatewayID, channelInfo, channelNum))
+    deviceNum = '1'
+    for gateway in coordinator.data:
+        for channel in coordinator[gateway]["state"]:
+            devices.append(NavienWaterHeaterEntity(coordinator, navilink, gateway, channel, deviceNum))
     async_add_entities(devices)
 
 
 class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     """Define a Navien water heater."""
  
-    def __init__(self, username, gatewayID, channelInfo, channelNum):
+    def __init__(self, coordinator, navilink, gateway, channel, deviceNum):
         """Pass coordinator to CoordinatorEntity."""
-        super().__init__(channelInfo["coordinator"])
-        self.deviceNum = 1
-        self.navien = NavienSmartControl(username)
-        self.channelNum = channelNum
-        self.channelInfo = channelInfo
-        self.gatewayID = gatewayID
-        self.state = self.coordinator.data[str(channelNum)][str(self.deviceNum)]
+        super().__init__(coordinator)
+        self.deviceNum = deviceNum
+        self.navilink = navilink
+        self.channel = channel
+        self.gateway = gateway
+        self.channelInfo = coordinator.data[gateway]["channelInfo"]["channel"][channel]
+        self.state = coordinator.data[gateway]["state"][channel][deviceNum]
 
     @property
     def available(self):
@@ -65,32 +65,32 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     def device_info(self) -> DeviceInfo:
         """Return device registry information for this entity."""
         return DeviceInfo(
-            identifiers = {(DOMAIN, self.gatewayID + "-" + str(self.channelNum))},
+            identifiers = {(DOMAIN, self.gateway + "-" + str(self.channel))},
             manufacturer = "Navien",
-            name = DeviceSorting(self.channelInfo["channel"][str(self.channelNum)]["deviceSorting"]).name + str(self.channelNum),
+            name = str(DeviceSorting(self.state["deviceSorting"]).name) + self.channel,
         )
 
     @property
     def name(self):
         """Return the name of the entity."""
-        return "Navien " + DeviceSorting(self.channelInfo["channel"][str(self.channelNum)]["deviceSorting"]).name + " Channel " + str(self.channelNum)
+        return "Navien " + str(DeviceSorting(self.state["deviceSorting"]).name) + " Channel " + self.channel
 
     @property
     def unique_id(self):
         """Return the unique ID of the entity."""
-        return self.gatewayID + "-" + str(self.channelNum) + "-" + str(self.deviceNum)
+        return self.gateway + "-" + self.channel + "-" + self.deviceNum
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        self.state = self.coordinator.data[str(self.channelNum)][str(self.deviceNum)]
+        self.state = self.coordinator.data[self.gateway]["state"][self.channel][self.deviceNum]
         self.async_write_ha_state()
 
     @property
     def temperature_unit(self):
         """Return temperature unit."""
         temp_unit = TEMP_CELSIUS
-        if self.channelInfo["channel"][str(self.channelNum)]["deviceTempFlag"] == TemperatureType.FAHRENHEIT.value:
+        if self.channelInfo["deviceTempFlag"] == TemperatureType.FAHRENHEIT.value:
             temp_unit = TEMP_FAHRENHEIT
 
         return temp_unit
@@ -118,34 +118,34 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     @property
     def min_temp(self):
         """Return the minimum temperature."""
-        return self.channelInfo["channel"][str(self.channelNum)]["minimumSettingWaterTemperature"]
+        return self.channelInfo["minimumSettingWaterTemperature"]
 
     @property
     def max_temp(self):
         """Return the maximum temperature."""
-        return self.channelInfo["channel"][str(self.channelNum)]["maximumSettingWaterTemperature"]
+        return self.channelInfo["maximumSettingWaterTemperature"]
 
     async def async_set_temperature(self,**kwargs):
         """Set target water temperature"""
         if (target_temp := kwargs.get(ATTR_TEMPERATURE)) is not None:
-            await self.navien.connect(self.gatewayID)
-            await self.navien.sendWaterTempControlRequest(self.gatewayID,self.channelNum,self.deviceNum,target_temp)
-            await self.navien.disconnect()
+            await self.navilink.connect(self.gateway)
+            await self.navilink.sendWaterTempControlRequest(self.gateway,int(self.channel),int(self.deviceNum),target_temp)
+            await self.navilink.disconnect()
             await self.coordinator.async_request_refresh()
         else:
             _LOGGER.error("A target temperature must be provided")
 
     async def async_turn_away_mode_on(self):
         """Turn away mode on."""
-        await self.navien.connect(self.gatewayID)
-        await self.navien.sendPowerControlRequest(self.gatewayID,self.channelNum,self.deviceNum,2)
-        await self.navien.disconnect()
+        await self.navilink.connect(self.gateway)
+        await self.navilink.sendPowerControlRequest(self.gateway,int(self.channel),int(self.deviceNum),2)
+        await self.navilink.disconnect()
         await self.coordinator.async_request_refresh()
 
 
     async def async_turn_away_mode_off(self):
         """Turn away mode off."""
-        await self.navien.connect(self.gatewayID)
-        await self.navien.sendPowerControlRequest(self.gatewayID,self.channelNum,self.deviceNum,1)
-        await self.navien.disconnect()
+        await self.navilink.connect(self.gateway)
+        await self.navilink.sendPowerControlRequest(self.gateway,int(self.channel),int(self.deviceNum),1)
+        await self.navilink.disconnect()
         await self.coordinator.async_request_refresh()
