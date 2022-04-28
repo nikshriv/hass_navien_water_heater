@@ -46,7 +46,7 @@ class NavienConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         try:
             self.navien = NavienSmartControl(user_input['username'],user_input['password'])
-            await self.navien.login()
+            gateways = await self.navien.login()
         except Exception:  # pylint: disable=broad-except
             errors["base"] = "invalid_auth"
         else:
