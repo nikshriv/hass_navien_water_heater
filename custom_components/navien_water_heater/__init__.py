@@ -33,28 +33,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def _update_method():
         """Get the latest data from Navien."""
         deviceStates = {}
-        try:
-            for gateway in gateways:
-                channelInfo = await navilink.connect(gateway["GID"])
-                deviceStates[gateway["GID"]]["channelInfo"] = channelInfo
-                _LOGGER.exception(channelInfo)
-                for channelNum in range(1,4):
-                    if channelInfo["channel"][str(channelNum)]["deviceSorting"] != DeviceSorting.NO_DEVICE.value:
-                        for deviceNum in range(1,channelInfo["channel"][str(channelNum)]["deviceCount"] + 1):
-                            try:
-                                state = await navilink.sendStateRequest(gateway["GID"], channelNum, deviceNum)
-                                state = navilink.convertState(state,channelInfo["deviceTempFlag"])
-                                _LOGGER.exception(state)
-                                deviceStates[gateway["GID"]]["state"][str(channelNum)][str(deviceNum)] = state
-                            except:
-                                pass
-            try:    
-                await navilink.disconnect()
-            except:
-                pass
-            return deviceStates
-        except:
-            raise UpdateFailed
+        for gateway in gateways:
+            channelInfo = await navilink.connect(gateway["GID"])
+            deviceStates[gateway["GID"]]["channelInfo"] = channelInfo
+            _LOGGER.exception(channelInfo)
+            for channelNum in range(1,4):
+                if channelInfo["channel"][str(channelNum)]["deviceSorting"] != DeviceSorting.NO_DEVICE.value:
+                    for deviceNum in range(1,channelInfo["channel"][str(channelNum)]["deviceCount"] + 1):
+                        try:
+                            state = await navilink.sendStateRequest(gateway["GID"], channelNum, deviceNum)
+                            state = navilink.convertState(state,channelInfo["deviceTempFlag"])
+                            _LOGGER.exception(state)
+                            deviceStates[gateway["GID"]]["state"][str(channelNum)][str(deviceNum)] = state
+                        except:
+                            pass
+        await navilink.disconnect()
+        return deviceStates
 
     coordinator = DataUpdateCoordinator(
         hass,
@@ -64,7 +58,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         update_interval=timedelta(seconds=60),
     )
     
-    #await coordinator.async_config_entry_first_refresh()
+    await coordinator.async_config_entry_first_refresh()
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
