@@ -37,6 +37,7 @@ async def async_setup_entry(
     navilink = NavienSmartControl(entry.data["username"],entry.data["password"])
     devices = []
     deviceNum = '1'
+    _LOGGER.exception(coordinator.data)
     for gateway in coordinator.data:
         for channel in coordinator.data[gateway]["state"]:
             devices.append(NavienWaterHeaterEntity(coordinator, navilink, gateway, channel, deviceNum))
