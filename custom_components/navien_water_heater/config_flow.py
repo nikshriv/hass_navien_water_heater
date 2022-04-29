@@ -46,17 +46,17 @@ class NavienConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         try:
             self.navien = NavienSmartControl(user_input['username'],user_input['password'])
-            _LOGGER.debug(user_input)
+            _LOGGER.exception(user_input)
             gateways = await self.navien.login()
-            _LOGGER.debug(gateways)
+            _LOGGER.exception(gateways)
         except Exception:  # pylint: disable=broad-except
             errors["base"] = "invalid_auth"
         else:
             title = 'navien_' + user_input['username']
             existing_entry = await self.async_set_unique_id(title)
-            _LOGGER.debug(existing_entry)
+            _LOGGER.exception(existing_entry)
             if not existing_entry:
-                _LOGGER.debug("creating entry")
+                _LOGGER.exception("creating entry")
                 return self.async_create_entry(title=title, data=user_input)
             else:
                 self.hass.config_entries.async_update_entry(existing_entry, data={"username":user_input["username"],"password":user_input["password"]})
