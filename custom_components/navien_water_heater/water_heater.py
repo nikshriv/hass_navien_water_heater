@@ -38,7 +38,7 @@ async def async_setup_entry(
     devices = []
     deviceNum = '1'
     for gateway in coordinator.data:
-        for channel in coordinator[gateway]["state"]:
+        for channel in coordinator.data[gateway]["state"]:
             devices.append(NavienWaterHeaterEntity(coordinator, navilink, gateway, channel, deviceNum))
     async_add_entities(devices)
 
