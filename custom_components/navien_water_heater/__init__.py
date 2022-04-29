@@ -28,6 +28,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     navilink = NavienSmartControl(entry.data["username"],entry.data["password"])
     gateways = await navilink.login()
+    _LOGGER.info(gateways)
 
     async def _update_method():
         """Get the latest data from Navien."""
