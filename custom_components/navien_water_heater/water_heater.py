@@ -55,7 +55,7 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
         self.channel = channel
         self.gateway = gateway
         self.channelInfo = coordinator.data[gateway]["channelInfo"]["channel"][channel]
-        self.state = coordinator.data[gateway]["state"][channel][deviceNum]
+        self._state = coordinator.data[gateway]["state"][channel][deviceNum]
 
     @property
     def available(self):
@@ -68,13 +68,13 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
         return DeviceInfo(
             identifiers = {(DOMAIN, self.gateway + "-" + str(self.channel))},
             manufacturer = "Navien",
-            name = str(DeviceSorting(self.state["deviceSorting"]).name) + self.channel,
+            name = str(DeviceSorting(self._state["deviceSorting"]).name) + self.channel,
         )
 
     @property
     def name(self):
         """Return the name of the entity."""
-        return "Navien " + str(DeviceSorting(self.state["deviceSorting"]).name) + " Channel " + self.channel
+        return "Navien " + str(DeviceSorting(self._state["deviceSorting"]).name) + " Channel " + self.channel
 
     @property
     def unique_id(self):
@@ -84,7 +84,7 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        self.state = self.coordinator.data[self.gateway]["state"][self.channel][self.deviceNum]
+        self._state = self.coordinator.data[self.gateway]["state"][self.channel][self.deviceNum]
         self.async_write_ha_state()
 
     @property
@@ -99,7 +99,7 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     @property
     def is_away_mode_on(self):
         """Return true if away mode is on."""
-        return not(self.state["powerStatus"])
+        return not(self._state["powerStatus"])
 
     @property
     def supported_features(self):
@@ -109,12 +109,12 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     @property
     def current_temperature(self):
         """Return the temperature we try to reach."""
-        return self.state["hotWaterTemperature"]
+        return self._state["hotWaterTemperature"]
 
     @property
     def target_temperature(self):
         """Return the temperature we try to reach."""
-        return self.state["hotWaterSettingTemperature"]
+        return self._state["hotWaterSettingTemperature"]
 
     @property
     def min_temp(self):
