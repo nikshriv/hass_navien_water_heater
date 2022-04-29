@@ -28,7 +28,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     navilink = NavienSmartControl(entry.data["username"],entry.data["password"])
     gateways = await navilink.login()
-    _LOGGER.info(gateways)
+    _LOGGER.exception(gateways)
 
     async def _update_method():
         """Get the latest data from Navien."""
@@ -37,14 +37,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             for gateway in gateways:
                 channelInfo = await navilink.connect(gateway["GID"])
                 deviceStates[gateway["GID"]]["channelInfo"] = channelInfo
-                _LOGGER.info(channelInfo)
+                _LOGGER.exception(channelInfo)
                 for channelNum in range(1,4):
                     if channelInfo["channel"][str(channelNum)]["deviceSorting"] != DeviceSorting.NO_DEVICE.value:
                         for deviceNum in range(1,channelInfo["channel"][str(channelNum)]["deviceCount"] + 1):
                             try:
                                 state = await navilink.sendStateRequest(gateway["GID"], channelNum, deviceNum)
                                 state = navilink.convertState(state,channelInfo["deviceTempFlag"])
-                                _LOGGER.info(state)
+                                _LOGGER.exception(state)
                                 deviceStates[gateway["GID"]]["state"][str(channelNum)][str(deviceNum)] = state
                             except:
                                 pass
