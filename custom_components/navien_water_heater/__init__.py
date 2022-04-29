@@ -38,12 +38,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 deviceStates[gateway["GID"]] = {}
                 deviceStates[gateway["GID"]]["channelInfo"] = channelInfo
                 for channelNum in range(1,4):
-                    _LOGGER.exception(channelInfo["channel"][str(channelNum)]["deviceSorting"])
+                    _LOGGER.exception("deviceSorting: " + str(channelInfo["channel"][str(channelNum)]["deviceSorting"]))
+                    _LOGGER.exception("deviceCount: " + str(channelInfo["channel"][str(channelNum)]["deviceCount"]))
                     if channelInfo["channel"][str(channelNum)]["deviceSorting"] > 0:
                         for deviceNum in range(1,channelInfo["channel"][str(channelNum)]["deviceCount"] + 1):
                             try:
                                 state = await navilink.sendStateRequest(gateway["GID"], channelNum, deviceNum)
+                                _LOGGER(state)
                                 state = navilink.convertState(state,channelInfo["deviceTempFlag"])
+                                _LOGGER(state)                                
                                 deviceStates[gateway["GID"]]["state"] = {}
                                 deviceStates[gateway["GID"]]["state"][str(channelNum)] = {}
                                 deviceStates[gateway["GID"]]["state"][str(channelNum)][str(deviceNum)] = state
