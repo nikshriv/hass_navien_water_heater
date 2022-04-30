@@ -9,7 +9,7 @@ from homeassistant.components.water_heater import (
     SUPPORT_OPERATION_MODE,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_TEMPERATURE, STATE_OFF, TEMP_CELSIUS, TEMP_FAHRENHEIT
+from homeassistant.const import ATTR_TEMPERATURE, STATE_OFF, STATE_ON, TEMP_CELSIUS, TEMP_FAHRENHEIT
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import DeviceInfo
@@ -39,7 +39,6 @@ async def async_setup_entry(
     navilink = NavienSmartControl(entry.data["username"],entry.data["password"])
     devices = []
     deviceNum = '1'
-    _LOGGER.exception(coordinator.data)
     for gateway in coordinator.data:
         for channel in coordinator.data[gateway]["state"]:
             devices.append(NavienWaterHeaterEntity(coordinator, navilink, gateway, channel, deviceNum))
@@ -114,13 +113,13 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
         power_status = self._state["powerStatus"]
         _current_op = STATE_OFF
         if power_status:
-            _current_op = STATE_GAS
+            _current_op = STATE_ON
         return _current_op
 
     @property
     def operation_list(self):
         """List of available operation modes."""
-        return [STATE_GAS]
+        return [STATE_OFF, STATE_ON]
     
     @property
     def current_temperature(self):
