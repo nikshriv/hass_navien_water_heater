@@ -9,7 +9,7 @@ from homeassistant.components.water_heater import (
     SUPPORT_OPERATION_MODE,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_TEMPERATURE, STATE_OFF, STATE_ON, TEMP_CELSIUS, TEMP_FAHRENHEIT
+from homeassistant.const import ATTR_TEMPERATURE, STATE_OFF, TEMP_CELSIUS, TEMP_FAHRENHEIT
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import DeviceInfo
@@ -67,20 +67,20 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     def device_info(self) -> DeviceInfo:
         """Return device registry information for this entity."""
         return DeviceInfo(
-            identifiers = {(DOMAIN, self.gateway + "-" + str(self.channel))},
+            identifiers = {(DOMAIN, self.gateway + "_" + str(self.channel))},
             manufacturer = "Navien",
-            name = str(DeviceSorting(self._state["deviceSorting"]).name) + self.channel,
+            name = str(DeviceSorting(self._state["deviceSorting"]).name) + "_" + self.channel,
         )
 
     @property
     def name(self):
         """Return the name of the entity."""
-        return "Navien " + str(DeviceSorting(self._state["deviceSorting"]).name) + " Channel " + self.channel
+        return "Navien " + str(DeviceSorting(self._state["deviceSorting"]).name) + " CH " + self.channel
 
     @property
     def unique_id(self):
         """Return the unique ID of the entity."""
-        return self.gateway + "-" + self.channel + "-" + self.deviceNum
+        return self.gateway + "_" + self.channel + "_" + self.deviceNum
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -113,13 +113,13 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
         power_status = self._state["powerStatus"]
         _current_op = STATE_OFF
         if power_status:
-            _current_op = STATE_ON
+            _current_op = STATE_GAS
         return _current_op
 
     @property
     def operation_list(self):
         """List of available operation modes."""
-        return [STATE_OFF, STATE_ON]
+        return [STATE_OFF, STATE_GAS]
     
     @property
     def current_temperature(self):
@@ -158,10 +158,19 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
         await self.navilink.disconnect()
         await self.coordinator.async_request_refresh()
 
-
     async def async_turn_away_mode_off(self):
         """Turn away mode off."""
         await self.navilink.connect(self.gateway)
         await self.navilink.sendPowerControlRequest(self.gateway,int(self.channel),int(self.deviceNum),1)
+        await self.navilink.disconnect()
+        await self.coordinator.async_request_refresh()
+        
+    async def async_set_operation_mode(self,operation_mode):
+        """Set operation mode"""
+        mode = 2
+        if operation_mode == STATE_GAS:
+            mode = 1
+        await self.navilink.connect(self.gateway)
+        await self.navilink.sendPowerControlRequest(self.gateway,int(self.channel),int(self.deviceNum),mode)
         await self.navilink.disconnect()
         await self.coordinator.async_request_refresh()
