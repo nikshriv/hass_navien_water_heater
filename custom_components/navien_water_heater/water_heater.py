@@ -6,6 +6,7 @@ from homeassistant.components.water_heater import (
     STATE_GAS,
     SUPPORT_AWAY_MODE,
     SUPPORT_TARGET_TEMPERATURE,
+    SUPPORT_OPERATION_MODE,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, STATE_OFF, TEMP_CELSIUS, TEMP_FAHRENHEIT
