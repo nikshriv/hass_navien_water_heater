@@ -3,6 +3,7 @@ import logging
 
 from homeassistant.components.water_heater import (
     WaterHeaterEntity,
+    STATE_GAS,
     SUPPORT_AWAY_MODE,
     SUPPORT_TARGET_TEMPERATURE,
 )
@@ -25,7 +26,7 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 SUPPORT_FLAGS = (
-    SUPPORT_AWAY_MODE | SUPPORT_TARGET_TEMPERATURE
+    SUPPORT_AWAY_MODE | SUPPORT_TARGET_TEMPERATURE | SUPPORT_OPERATION_MODE
 )
 
 
@@ -106,6 +107,20 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
         """Return the list of supported features."""
         return SUPPORT_FLAGS
 
+    @property
+    def current_operation(self):
+        """Return current operation."""
+        power_status = self._state["powerStatus"]
+        _current_op = STATE_OFF
+        if power_status:
+            _current_op = STATE_GAS
+        return _current_op
+
+    @property
+    def operation_list(self):
+        """List of available operation modes."""
+        return [STATE_GAS]
+    
     @property
     def current_temperature(self):
         """Return the temperature we try to reach."""
