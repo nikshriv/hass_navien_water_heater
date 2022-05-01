@@ -23,7 +23,7 @@ POWER_KCAL_PER_HOUR = 'kcal/hr'
 FLOW_GALLONS_PER_MIN = 'gal/min'
 FLOW_LITERS_PER_MIN = 'liters/min'
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
