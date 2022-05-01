@@ -79,7 +79,7 @@ SENSORS = {
             device_class = None,
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=POWER_KCAL_PER_HOUR,
-            name="Power",
+            name="Instant Gas Usage",
         ),
         "gasAccumulatedUse": SensorEntityDescription(
             key = "gasAccumulatedUse",
@@ -149,7 +149,7 @@ class NavienSensor(CoordinatorEntity, SensorEntity):
     @property
     def name(self):
         """Return the name of the entity."""
-        return self.sensor_description.name + " Ch" + self.channel + " Dev" + self.deviceNum
+        return str(DeviceSorting(self._state["deviceSorting"]).name) + " " + self.sensor_description.name
 
     @property
     def unique_id(self):
@@ -172,6 +172,11 @@ class NavienSensor(CoordinatorEntity, SensorEntity):
         self._state = self.coordinator.data[self.gateway]["state"][self.channel][self.deviceNum]
         self.async_write_ha_state()
 
+    @property
+    def native_unit_of_measurement(self):
+        """Return the unit of measurement of this entity, if any."""
+        return self.sensor_description.native_unit_of_measurement
+    
     @property
     def native_value(self) -> StateType:
         """Return the value reported by the sensor."""
