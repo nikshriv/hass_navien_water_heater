@@ -49,7 +49,7 @@ SENSORS = {
             device_class = None,
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=POWER_BTU_PER_HOUR,
-            name="Power",
+            name="Current Gas Usage",
         ),
         "gasAccumulatedUse": SensorEntityDescription(
             key = "gasAccumulatedUse",
@@ -79,7 +79,7 @@ SENSORS = {
             device_class = None,
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=POWER_KCAL_PER_HOUR,
-            name="Instant Gas Usage",
+            name="Current Gas Usage",
         ),
         "gasAccumulatedUse": SensorEntityDescription(
             key = "gasAccumulatedUse",
