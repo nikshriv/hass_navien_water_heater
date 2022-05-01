@@ -38,24 +38,28 @@ _LOGGER = logging.getLogger(__name__)
 SENSORS = {
     "imperial":{
         "averageCalorimeter": SensorEntityDescription(
+            key = "averageCalorimeter",
             device_class = SensorDeviceClass.POWER_FACTOR,
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=PERCENTAGE,
             name="Heating Capacity",
         ),
         "gasInstantUse": SensorEntityDescription(
+            key = "gasInstantUse",
             device_class = None,
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=POWER_BTU_PER_HOUR,
             name="Power",
         ),
         "gasAccumulatedUse": SensorEntityDescription(
+            key = "gasAccumulatedUse",
             device_class=SensorDeviceClass.GAS,
             state_class = SensorStateClass.TOTAL_INCREASING,
             native_unit_of_measurement=VOLUME_CUBIC_FEET,
             name="Total Gas Usage",
         ),
         "hotWaterFlowRate": SensorEntityDescription(
+            key = "hotWaterFlowRate",
             device_class = None,
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=FLOW_GALLONS_PER_MIN,
@@ -64,24 +68,28 @@ SENSORS = {
     },
     "metric":{
         "averageCalorimeter": SensorEntityDescription(
+            key = "averageCalorimeter",
             device_class = SensorDeviceClass.POWER_FACTOR,
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=PERCENTAGE,
             name="Heating Capacity",
         ),
         "gasInstantUse": SensorEntityDescription(
+            key = "gasInstantUse",
             device_class = None,
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=POWER_KCAL_PER_HOUR,
             name="Power",
         ),
         "gasAccumulatedUse": SensorEntityDescription(
+            key = "gasAccumulatedUse",
             device_class=SensorDeviceClass.GAS,
             state_class = SensorStateClass.TOTAL_INCREASING,
             native_unit_of_measurement=VOLUME_CUBIC_METERS,
             name="Total Gas Usage",
         ),
         "hotWaterFlowRate": SensorEntityDescription(
+            key = "hotWaterFlowRate",
             device_class = None,
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=FLOW_LITERS_PER_MIN,
