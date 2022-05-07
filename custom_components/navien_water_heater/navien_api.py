@@ -991,7 +991,7 @@ class NavienSmartControl:
             ControlSorting.CONTROL.value,
             ControlType.UNKNOWN.value,
             DeviceControl.WATER_TEMPERATURE.value,
-            tempVal,
+            int(tempVal),
             self.initWeeklyDay(),
         )
 
@@ -1039,7 +1039,7 @@ class NavienSmartControl:
                 ControlSorting.CONTROL.value,
                 ControlType.UNKNOWN.value,
                 DeviceControl.HEATING_WATER_TEMPERATURE.value,
-                tempVal,
+                int(tempVal),
                 self.initWeeklyDay(),
             )
 
@@ -1089,7 +1089,7 @@ class NavienSmartControl:
                 ControlSorting.CONTROL.value,
                 ControlType.UNKNOWN.value,
                 DeviceControl.RECIRCULATION_TEMPERATURE.value,
-                tempVal,
+                int(tempVal),
                 self.initWeeklyDay(),
             )
 
