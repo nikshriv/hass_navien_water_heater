@@ -8,6 +8,20 @@
         },
         "title": "NaviLink Credentials",
         "description": "Please enter your NaviLink account credentials"
+      },
+      "pick_gateway": {
+        "data": {
+          "gatewayID": "Gateway"
+        },
+        "title": "Select NaviLink Hub",
+        "description": "Please select the NaviLink hub you would like to set up. Listed below are the 'NickNames' you assigend to your NaviLink hub when you set it up."
+      },
+      "set_polling_interval": {
+        "data": {
+          "polling_interval": "Polling Interval"
+        },
+        "title": "NaviLink Polling Interval",
+        "description": "Indicate how often you would like to poll the NaviLink Hub (Minumum allowed interval is 5 seconds, but this could cause connectivity issues with the server.)"
       }
     },
     "error": {
@@ -16,7 +30,7 @@
     },
     "abort": {
       "reauth_successful": "Reauthorization successful",
-      "no_devices_available": "No devices available with the account credentials, aborting..."
+      "no_devices_available": "No devices available with the provided account credentials, aborting..."
     }
   }
 }

@@ -5,36 +5,19 @@ combi-boiler or boiler connected via NaviLink.
 Please refer to the documentation provided in the README.md,
 which can be found at https://github.com/rudybrian/PyNavienSmartControl/
 
-This is a slightly modified version that uses async for easier integration with hass
+This is a modified version that uses async for easier integration with hass
 
 """
 
-__version__ = "1.0"
-__author__ = "Brian Rudy"
-__email__ = "brudy@praecogito.com"
-__credits__ = ["matthew1471", "Gary T. Giesen"]
-__date__ = "3/15/2022"
-__license__ = "GPL"
-
-
-# Third party library
 import aiohttp
-
-# We use asyncio for tcp i/o.
 import asyncio
-
-# We unpack structures.
 import struct
-
-# We use namedtuple to reduce index errors.
 import collections
-
-# We use Python enums.
 import enum
-
-# We need json support for parsing the REST API response
 import json
-
+import logging 
+from datetime import datetime
+_LOGGER = logging.getLogger(__name__)
 
 class ControlType(enum.Enum):
     UNKNOWN = 0
@@ -170,14 +153,10 @@ class AutoVivification(dict):
             value = self[item] = type(self)()
             return value
 
-
-class NavienSmartControl:
-    """The main NavienSmartControl class"""
+class NavienAccountInfo:
 
     # The Navien server.
-    navienServer = "uscv2.naviensmartcontrol.com"
-    navienWebServer = "https://" + navienServer
-    navienServerSocketPort = 6001
+    navienWebServer = "https://uscv2.naviensmartcontrol.com"
 
     def __init__(self, userID, passwd):
         """
@@ -189,8 +168,6 @@ class NavienSmartControl:
         """
         self.userID = userID
         self.passwd = passwd
-        self.reader = None
-        self.writer = None
 
     async def login(self):
         """
@@ -199,7 +176,7 @@ class NavienSmartControl:
         :return: The REST API response
         """
         async with aiohttp.ClientSession() as session:
-            async with session.post(NavienSmartControl.navienWebServer + "/api/requestDeviceList", json={"userID": self.userID, "password": self.passwd}) as response:
+            async with session.post(NavienAccountInfo.navienWebServer + "/api/requestDeviceList", json={"userID": self.userID, "password": self.passwd}) as response:
                 # If an error occurs this will raise it, otherwise it returns the gateway list.
                 return await self.handleResponse(response)
 
@@ -223,32 +200,85 @@ class NavienSmartControl:
             raise Exception("Error: Unexpected JSON response to gateway list request.")
 
         return gateway_data
+    
 
-    async def connect(self, gatewayID):
+class NavienSmartControl:
+    """The main NavienSmartControl class"""
+
+    # The Navien TCP server.
+    navienTcpServer = "uscv2.naviensmartcontrol.com"
+    navienTcpServerSocketPort = 6001
+
+    def __init__(self, userID, gatewayID):
+        """
+        Construct a new 'NavienSmartControl' object.
+
+        :param userID: The user ID used to log in to the mobile application
+        :return: returns nothing
+        """
+        self.userID = userID
+        self.gatewayID = gatewayID
+        self.reader = None
+        self.writer = None
+        self.connected = False
+        self.last_connect = None
+        self.channelInfo= None
+
+    async def connect(self,retry_count=3):
         """
         Connect to the binary API service
         
-        :param gatewayID: The gatewayID that we want to connect to
         :return: The response data (normally a channel information response)
         """
-
-        self.reader, self.writer = await asyncio.open_connection(NavienSmartControl.navienServer, NavienSmartControl.navienServerSocketPort)
-        self.writer.write((self.userID + "$" + "iPhone1.0" + "$" + gatewayID).encode())
-        await self.writer.drain()
-
-        # Receive the status.
-        data = await self.reader.read(1024)
-
-        # Return the parsed data.
-        return self.parseResponse(data)
         
-    async def disconnect(self):
+        retry_count = retry_count - 1 
+        
+        try:
+            if not self.connected:
+                self.reader, self.writer = await asyncio.open_connection(NavienSmartControl.navienTcpServer, NavienSmartControl.navienTcpServerSocketPort)
+            data = await self.send_and_receive((self.userID + "$" + "iPhone1.0" + "$" + self.gatewayID).encode())
+            parsedResponse = self.parseResponse(data)
+            self.channelInfo = parsedResponse
+            self.connected = True
+            self.last_connect = datetime.now() 
+            return parsedResponse
+        except Exception as e:
+            _LOGGER.error(e)
+            if retry_count > 0:
+                return await self.connect(retry_count)
+            
+    async def disconnect(self,retry_count=3):
         """
         Disconnect the from the API
         """
-        if (self.writer):
-            self.writer.close()
-            await self.writer.wait_closed()
+        retry_count = retry_count - 1
+        try:
+            if self.connected:
+                self.writer.close()
+                await self.writer.wait_closed()
+                self.connected = False
+                self.writer = None
+                self.reader = None
+        except Exception as e:
+            _LOGGER.error(e)
+            if retry_count > 0:
+                return await self.disconnect(retry_count)
+
+    async def send_and_receive(self,data,retry_count=3):
+        """Attempt to send request and receive response from Navien TCP server"""
+        retry_count = retry_count - 1
+        try:
+            self.writer.write(data)
+            await self.writer.drain()
+            received_data = await self.reader.read(1024)
+            return received_data
+        except Exception as e:
+            _LOGGER.error(e)
+            await self.disconnect()
+            await self.connect()
+            if retry_count > 0:
+                return await self.send_and_receive(data,retry_count)
+            
 
     def parseResponse(self, data):
         """
@@ -259,38 +289,37 @@ class NavienSmartControl:
         :return: The parsed response data from the corresponding response-specific parser.
         """
         # The response is returned with a fixed header for the first 12 bytes
-        commonResponseColumns = collections.namedtuple(
-            "response",
-            [
-                "deviceID",
-                "countryCD",
-                "controlType",
-                "swVersionMajor",
-                "swVersionMinor",
-            ],
-        )
-        commonResponseData = commonResponseColumns._make(
-            struct.unpack("8s B B B B", data[:12])
-        )
-        # Based on the controlType, parse the response accordingly
-        if commonResponseData.controlType == ControlType.CHANNEL_INFORMATION.value:
-            retval = self.parseChannelInformationResponse(commonResponseData, data)
-        elif commonResponseData.controlType == ControlType.STATE.value:
-            retval = self.parseStateResponse(commonResponseData, data)
-        elif commonResponseData.controlType == ControlType.TREND_SAMPLE.value:
-            retval = self.parseTrendSampleResponse(commonResponseData, data)
-        elif commonResponseData.controlType == ControlType.TREND_MONTH.value:
-            retval = self.parseTrendMYResponse(commonResponseData, data)
-        elif commonResponseData.controlType == ControlType.TREND_YEAR.value:
-            retval = self.parseTrendMYResponse(commonResponseData, data)
-        elif commonResponseData.controlType == ControlType.ERROR_CODE.value:
-            retval = self.parseErrorCodeResponse(commonResponseData, data)
-        elif commonResponseData.controlType == ControlType.UNKNOWN.value:
-            raise Exception("Error: Unknown controlType. Please restart to retry.")
-        else:
-            raise Exception(
-                "An error occurred in the process of retrieving data; please restart to retry."
+        if len(data) > 12:
+            commonResponseColumns = collections.namedtuple(
+                "response",
+                [
+                    "deviceID",
+                    "countryCD",
+                    "controlType",
+                    "swVersionMajor",
+                    "swVersionMinor",
+                ],
             )
+            commonResponseData = commonResponseColumns._make(
+                struct.unpack("8s B B B B", data[:12])
+            )
+            # Based on the controlType, parse the response accordingly
+            if commonResponseData.controlType == ControlType.CHANNEL_INFORMATION.value:
+                retval = self.parseChannelInformationResponse(commonResponseData, data)
+            elif commonResponseData.controlType == ControlType.STATE.value:
+                retval = self.parseStateResponse(commonResponseData, data)
+            elif commonResponseData.controlType == ControlType.TREND_SAMPLE.value:
+                retval = self.parseTrendSampleResponse(commonResponseData, data)
+            elif commonResponseData.controlType == ControlType.TREND_MONTH.value:
+                retval = self.parseTrendMYResponse(commonResponseData, data)
+            elif commonResponseData.controlType == ControlType.TREND_YEAR.value:
+                retval = self.parseTrendMYResponse(commonResponseData, data)
+            elif commonResponseData.controlType == ControlType.ERROR_CODE.value:
+                retval = self.parseErrorCodeResponse(commonResponseData, data)
+            else:
+                raise Exception("Error: Response control type is not recognized")
+        else:
+            raise Exception("Error: Response to request does not contain enough data to parse")
 
         return retval
 
@@ -636,7 +665,6 @@ class NavienSmartControl:
 
     async def sendRequest(
         self,
-        gatewayID,
         currentControlChannel,
         deviceNumber,
         controlSorting,
@@ -648,7 +676,6 @@ class NavienSmartControl:
         """
         Main handler for sending a request to the binary API
         
-        :param gatewayID: The gatewayID (NaviLink) the device is connected to
         :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :param controlSorting: Corresponds with the ControlSorting enum (info or control)
@@ -677,9 +704,8 @@ class NavienSmartControl:
                 requestHeader["dSid"],
             ]
         )
-        if type(gatewayID) == str:
-            gatewayID = bytes.fromhex(gatewayID)
-        sendData.extend(gatewayID)
+        gwID = bytes.fromhex(self.gatewayID)
+        sendData.extend(gwID)
         sendData.extend(
             [
                 0x01,  # commandCount
@@ -727,14 +753,31 @@ class NavienSmartControl:
                 WeeklyDay["10_Flag"],
             ]
         )
+        
+        if not self.connected:
+            try:
+                await self.connect()
+            except Exception as e:
+                _LOGGER.error(e)
 
-        # We should ensure that the socket is still connected, and abort if not
-        self.writer.write(sendData)
-        await self.writer.drain()
+        currentRequestTime = datetime.now()
+        time_diff  = (currentRequestTime - self.last_connect).total_seconds()
 
-        # Receive the status.
-        data = await self.reader.read(1024)
-        return self.parseResponse(data)
+        if time_diff >= 600:
+            try:
+                await self.disconnect()
+                await self.connect()                    
+            except Exception as e:
+                _LOGGER.error(e)
+        
+        try:
+            data = await self.send_and_receive(sendData)
+            parsedResponse = self.parseResponse(data)
+            return parsedResponse
+        except Exception as e:
+            _LOGGER.error(e)
+            raise Exception("Unable to obtain Navilink state")
+     
 
     def initWeeklyDay(self):
         """
@@ -753,17 +796,15 @@ class NavienSmartControl:
 
     # ----- Convenience methods for sending requests ----- #
 
-    async def sendStateRequest(self, gatewayID, currentControlChannel, deviceNumber):
+    async def sendStateRequest(self, currentControlChannel, deviceNumber):
         """
         Send state request
         
-        :param gatewayID: The gatewayID (NaviLink) the device is connected to
         :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :return: Parsed response data
         """
-        return await self.sendRequest(
-            gatewayID,
+        state = await self.sendRequest(
             currentControlChannel,
             deviceNumber,
             ControlSorting.INFO.value,
@@ -772,18 +813,17 @@ class NavienSmartControl:
             0x00,
             self.initWeeklyDay(),
         )
+        return self.convertState(state,currentControlChannel,deviceNumber)
 
-    async def sendChannelInfoRequest(self, gatewayID, currentControlChannel, deviceNumber):
+    async def sendChannelInfoRequest(self, currentControlChannel, deviceNumber):
         """
         Send channel information request (we already get this when we log in)
         
-        :param gatewayID: The gatewayID (NaviLink) the device is connected to
         :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :return: Parsed response data
         """
         return await self.sendRequest(
-            gatewayID,
             currentControlChannel,
             deviceNumber,
             ControlSorting.INFO.value,
@@ -793,17 +833,15 @@ class NavienSmartControl:
             self.initWeeklyDay(),
         )
 
-    async def sendTrendSampleRequest(self, gatewayID, currentControlChannel, deviceNumber):
+    async def sendTrendSampleRequest(self, currentControlChannel, deviceNumber):
         """
         Send trend sample request
         
-        :param gatewayID: The gatewayID (NaviLink) the device is connected to
         :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :return: Parsed response data
         """
         return await self.sendRequest(
-            gatewayID,
             currentControlChannel,
             deviceNumber,
             ControlSorting.INFO.value,
@@ -813,17 +851,15 @@ class NavienSmartControl:
             self.initWeeklyDay(),
         )
 
-    async def sendTrendMonthRequest(self, gatewayID, currentControlChannel, deviceNumber):
+    async def sendTrendMonthRequest(self, currentControlChannel, deviceNumber):
         """
         Send trend month request
         
-        :param gatewayID: The gatewayID (NaviLink) the device is connected to
         :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :return: Parsed response data
         """
         return await self.sendRequest(
-            gatewayID,
             currentControlChannel,
             deviceNumber,
             ControlSorting.INFO.value,
@@ -833,17 +869,15 @@ class NavienSmartControl:
             self.initWeeklyDay(),
         )
 
-    async def sendTrendYearRequest(self, gatewayID, currentControlChannel, deviceNumber):
+    async def sendTrendYearRequest(self, currentControlChannel, deviceNumber):
         """
         Send trend year request
         
-        :param gatewayID: The gatewayID (NaviLink) the device is connected to
         :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :return: Parsed response data
         """
         return await self.sendRequest(
-            gatewayID,
             currentControlChannel,
             deviceNumber,
             ControlSorting.INFO.value,
@@ -854,19 +888,17 @@ class NavienSmartControl:
         )
 
     async def sendPowerControlRequest(
-        self, gatewayID, currentControlChannel, deviceNumber, powerState
+        self, currentControlChannel, deviceNumber, powerState
     ):
         """
         Send device power control request
         
-        :param gatewayID: The gatewayID (NaviLink) the device is connected to
         :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :param powerState: The power state as identified in the OnOFFFlag enum
         :return: Parsed response data
         """
         return await self.sendRequest(
-            gatewayID,
             currentControlChannel,
             deviceNumber,
             ControlSorting.CONTROL.value,
@@ -877,12 +909,11 @@ class NavienSmartControl:
         )
 
     async def sendHeatControlRequest(
-        self, gatewayID, currentControlChannel, deviceNumber, channelData, heatState
+        self, currentControlChannel, deviceNumber, channelData, heatState
     ):
         """
         Send device heat control request
         
-        :param gatewayID: The gatewayID (NaviLink) the device is connected to
         :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :param heatState: The heat state as identified in the OnOFFFlag enum
@@ -901,7 +932,6 @@ class NavienSmartControl:
             raise Exception("Error: Heat is disabled.")
         else:
             return await self.sendRequest(
-                gatewayID,
                 currentControlChannel,
                 deviceNumber,
                 ControlSorting.CONTROL.value,
@@ -912,14 +942,13 @@ class NavienSmartControl:
             )
 
     async def sendOnDemandControlRequest(
-        self, gatewayID, currentControlChannel, deviceNumber, channelData
+        self, currentControlChannel, deviceNumber, channelData
     ):
         """
         Send device on demand control request
 
         Note that no additional state parameter is required as this is the equivalent of pressing the HotButton.
 
-        :param gatewayID: The gatewayID (NaviLink) the device is connected to
         :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :return: Parsed response data
@@ -937,7 +966,6 @@ class NavienSmartControl:
             raise Exception("Error: Recirculation is disabled.")
         else:
             return await self.sendRequest(
-                gatewayID,
                 currentControlChannel,
                 deviceNumber,
                 ControlSorting.CONTROL.value,
@@ -948,12 +976,11 @@ class NavienSmartControl:
             )
 
     async def sendDeviceWeeklyControlRequest(
-        self, gatewayID, currentControlChannel, deviceNumber, weeklyState
+        self, currentControlChannel, deviceNumber, weeklyState
     ):
         """
         Send device weekly control (enable or disable weekly schedule)
         
-        :param gatewayID: The gatewayID (NaviLink) the device is connected to
         :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :param weeklyState: The weekly control state as identified in the OnOFFFlag enum
@@ -961,7 +988,6 @@ class NavienSmartControl:
 
         """
         return await self.sendRequest(
-            gatewayID,
             currentControlChannel,
             deviceNumber,
             ControlSorting.CONTROL.value,
@@ -972,12 +998,11 @@ class NavienSmartControl:
         )
 
     async def sendWaterTempControlRequest(
-        self, gatewayID, currentControlChannel, deviceNumber, tempVal
+        self, currentControlChannel, deviceNumber, tempVal
     ):
         """
         Send device water temperature control request
         
-        :param gatewayID: The gatewayID (NaviLink) the device is connected to
         :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :param channelData: The parsed channel information data used to determine limits and units
@@ -985,7 +1010,6 @@ class NavienSmartControl:
         :return: Parsed response data
         """
         return await self.sendRequest(
-            gatewayID,
             currentControlChannel,
             deviceNumber,
             ControlSorting.CONTROL.value,
@@ -996,12 +1020,11 @@ class NavienSmartControl:
         )
 
     async def sendHeatingWaterTempControlRequest(
-        self, gatewayID, currentControlChannel, deviceNumber, channelData, tempVal
+        self, currentControlChannel, deviceNumber, channelData, tempVal
     ):
         """
         Send device heating water temperature control request
         
-        :param gatewayID: The gatewayID (NaviLink) the device is connected to
         :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :param channelData: The parsed channel information data used to determine limits and units
@@ -1033,7 +1056,6 @@ class NavienSmartControl:
             raise Exception("Error: Invalid tempVal requested.")
         else:
             return await self.sendRequest(
-                gatewayID,
                 currentControlChannel,
                 deviceNumber,
                 ControlSorting.CONTROL.value,
@@ -1044,12 +1066,11 @@ class NavienSmartControl:
             )
 
     async def sendRecirculationTempControlRequest(
-        self, gatewayID, currentControlChannel, deviceNumber, channelData, tempVal
+        self, currentControlChannel, deviceNumber, channelData, tempVal
     ):
         """
         Send recirculation temperature control request
         
-        :param gatewayID: The gatewayID (NaviLink) the device is connected to
         :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
         :param deviceNumber: The device number on the serial bus corresponding with the device
         :param channelData: The parsed channel information data used to determine limits and units
@@ -1083,7 +1104,6 @@ class NavienSmartControl:
             raise Exception("Error: Invalid tempVal requested.")
         else:
             return await self.sendRequest(
-                gatewayID,
                 currentControlChannel,
                 deviceNumber,
                 ControlSorting.CONTROL.value,
@@ -1201,7 +1221,6 @@ class NavienSmartControl:
 
         # print(json.dumps(tmpWeeklyDay, indent=2, default=str))
         return await self.sendRequest(
-            stateData["deviceID"],
             stateData["currentChannel"],
             stateData["deviceNumber"],
             ControlSorting.CONTROL.value,
@@ -1211,7 +1230,7 @@ class NavienSmartControl:
             tmpWeeklyDay,
         )
 
-    def convertState(self, stateData, temperatureType):
+    def convertState(self, stateData,channel,deviceNum):
         """
         Print State response data
         
@@ -1219,7 +1238,7 @@ class NavienSmartControl:
         :param temperatureType: The temperature type is used to determine if responses should be in metric or imperial units.
         """
 
-        if temperatureType == TemperatureType.CELSIUS.value:
+        if self.channelInfo['channel'][str(channel)]['deviceTempFlag'] == TemperatureType.CELSIUS.value:
             if stateData["deviceSorting"] in [
                 DeviceSorting.NFC.value,
                 DeviceSorting.NCB_H.value,
@@ -1255,7 +1274,7 @@ class NavienSmartControl:
                 stateData["hotWaterCurrentTemperature"] = round(stateData["hotWaterCurrentTemperature"] / 2.0, 1)
                 stateData["hotWaterFlowRate"] = round(self.bigHexToInt(stateData["hotWaterFlowRate"]) / 10.0, 1)
                 stateData["hotWaterTemperature"] = round(stateData["hotWaterTemperature"] / 2.0, 1)
-        elif temperatureType == TemperatureType.FAHRENHEIT.value:
+        elif self.channelInfo['channel'][str(channel)]['deviceTempFlag'] == TemperatureType.FAHRENHEIT.value:
             if stateData["deviceSorting"] in [
                 DeviceSorting.NFC.value,
                 DeviceSorting.NCB_H.value,

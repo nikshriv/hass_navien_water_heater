@@ -17,6 +17,8 @@ from homeassistant.const import (
     VOLUME_CUBIC_METERS,
     VOLUME_CUBIC_FEET,
     POWER_BTU_PER_HOUR,
+    TEMP_CELSIUS,
+    TEMP_FAHRENHEIT,
 )
 
 POWER_KCAL_PER_HOUR = 'kcal/hr'
@@ -64,6 +66,13 @@ SENSORS = {
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=FLOW_GALLONS_PER_MIN,
             name="Hot Water Flow",
+        ),
+        "hotWaterTemperature": SensorEntityDescription(
+            key = "hotWaterTemperature",
+            device_class = None,
+            state_class = SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement=TEMP_FAHRENHEIT,
+            name="Hot Water Inlet Temperature",
         )
     },
     "metric":{
@@ -94,6 +103,13 @@ SENSORS = {
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=FLOW_LITERS_PER_MIN,
             name="Hot Water Flow",
+        ),
+        "hotWaterTemperature": SensorEntityDescription(
+            key = "hotWaterTemperature",
+            device_class = None,
+            state_class = SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement=TEMP_CELSIUS,
+            name="Hot Water Inlet Temperature",
         )
     }
 }
@@ -105,31 +121,30 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Airthings sensor."""
 
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    navilink,coordinator = hass.data[DOMAIN][entry.entry_id]
     sensors = []
-    for gateway in coordinator.data:
-        for channel in coordinator.data[gateway]["state"]:
-            units = "metric"
-            if coordinator.data[gateway]["channelInfo"]["channel"][channel]["deviceTempFlag"] == TemperatureType.FAHRENHEIT.value:
-                units = "imperial"
-            for deviceNum in coordinator.data[gateway]["state"][channel]:
-                for sensor_type in SENSORS[units]:
-                    sensors.append(NavienSensor(coordinator, gateway, channel, deviceNum, SENSORS[units][sensor_type], sensor_type))
+    for channel in coordinator.data["state"]:
+        units = "metric"
+        if coordinator.data["channelInfo"]["channel"][channel]["deviceTempFlag"] == TemperatureType.FAHRENHEIT.value:
+            units = "imperial"
+        for deviceNum in coordinator.data["state"][channel]:
+            for sensor_type in SENSORS[units]:
+                sensors.append(NavienSensor(coordinator, channel, deviceNum, SENSORS[units][sensor_type], sensor_type))
     async_add_entities(sensors)
 
 
 class NavienSensor(CoordinatorEntity, SensorEntity):
     """Representation of a Navien Sensor device."""
 
-    def __init__(self, coordinator, gateway, channel, deviceNum, sensor_description, sensor_type):
+    def __init__(self, coordinator, channel, deviceNum, sensor_description, sensor_type):
         """Initialize the sensor."""
         super().__init__(coordinator)
         self.sensor_description = sensor_description
         self.deviceNum = deviceNum
         self.channel = channel
-        self.gateway = gateway
-        self.channelInfo = coordinator.data[gateway]["channelInfo"]["channel"][channel]
-        self._state = coordinator.data[gateway]["state"][channel][deviceNum]
+        self.gateway = coordinator.data["channelInfo"]["deviceID"]
+        self.channelInfo = coordinator.data["channelInfo"]["channel"][channel]
+        self._state = coordinator.data["state"][channel][deviceNum]
         self.sensor_type = sensor_type
 
     @property
@@ -169,7 +184,7 @@ class NavienSensor(CoordinatorEntity, SensorEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        self._state = self.coordinator.data[self.gateway]["state"][self.channel][self.deviceNum]
+        self._state = self.coordinator.data["state"][self.channel][self.deviceNum]
         self.async_write_ha_state()
 
     @property
