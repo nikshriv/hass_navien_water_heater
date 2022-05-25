@@ -223,6 +223,7 @@ class NavienSmartControl:
         self.connected = False
         self.last_connect = None
         self.channelInfo= None
+        self.reading = False
 
     async def connect(self,retry_count=3):
         """
@@ -267,18 +268,25 @@ class NavienSmartControl:
     async def send_and_receive(self,data,retry_count=3):
         """Attempt to send request and receive response from Navien TCP server"""
         retry_count = retry_count - 1
+        wait_count = 0
+        while self.reading and wait_count < 5:
+            await asyncio.sleep(1)
+            wait_count = wait_count + 1
         try:
             self.writer.write(data)
             await self.writer.drain()
-            received_data = await self.reader.read(1024)
+            self.reading = True
+            received_data = await asyncio.wait_for(self.reader.read(1024),5)
+            self.reading = False
             return received_data
         except Exception as e:
             _LOGGER.error(e)
+            self.reading = False
             await self.disconnect()
             await self.connect()
-            if retry_count > 0:
-                return await self.send_and_receive(data,retry_count)
-            
+            #if retry_count > 0:
+            #    return await self.send_and_receive(data,retry_count)
+           
 
     def parseResponse(self, data):
         """
