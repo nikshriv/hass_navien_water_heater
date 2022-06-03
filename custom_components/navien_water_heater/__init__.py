@@ -25,22 +25,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})
     navilink = NavienSmartControl(entry.data["username"],entry.data["gatewayID"])
-    await navilink.connect(retry_count=10)
+    await navilink.connect()
     
     async def _update_method():
         """Get the latest data from Navien."""
         deviceState = {}
+        deviceState["state"] = {}
         deviceState["channelInfo"] = navilink.channelInfo
         try:
             for channelNum in range(1,4):
                 if navilink.channelInfo["channel"][str(channelNum)]["deviceSorting"] > 0:
                     for deviceNum in range(1,navilink.channelInfo["channel"][str(channelNum)]["deviceCount"] + 1):
-                        state = await navilink.sendStateRequest(channelNum, deviceNum)
-                        deviceState["state"] = {}
                         deviceState["state"][str(channelNum)] = {}
-                        deviceState["state"][str(channelNum)][str(deviceNum)] = state
-        except:
+                        newState = await navilink.sendStateRequest(channelNum, deviceNum)
+                        if newState is not None:
+                            deviceState["state"][str(channelNum)][str(deviceNum)] = newState
+                        else:
+                            raise UpdateFailed
+        except Exception as e:
+            _LOGGER.error(type(e).__name__)
             raise UpdateFailed
+            
         return deviceState
 
     coordinator = DataUpdateCoordinator(

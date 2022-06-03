@@ -21,7 +21,7 @@
           "polling_interval": "Polling Interval"
         },
         "title": "NaviLink Polling Interval",
-        "description": "Indicate how often you would like to poll the NaviLink Hub (Minumum allowed interval is 5 seconds, but this could cause connectivity issues with the server.)"
+        "description": "Indicate how often you would like to poll the NaviLink Hub (Minumum allowed interval is 15 seconds.)"
       }
     },
     "error": {

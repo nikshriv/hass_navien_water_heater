@@ -1,5 +1,6 @@
 """Support for Navien NaviLink water heaters."""
 import logging
+import asyncio
 
 from homeassistant.components.water_heater import (
     WaterHeaterEntity,
@@ -142,6 +143,7 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
         """Set target water temperature"""
         if (target_temp := kwargs.get(ATTR_TEMPERATURE)) is not None:
             await self.navilink.sendWaterTempControlRequest(int(self.channel),int(self.deviceNum),target_temp)
+            await asyncio.sleep(5)
             await self.coordinator.async_request_refresh()
         else:
             _LOGGER.error("A target temperature must be provided")
@@ -149,11 +151,13 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     async def async_turn_away_mode_on(self):
         """Turn away mode on."""
         await self.navilink.sendPowerControlRequest(int(self.channel),int(self.deviceNum),2)
+        await asyncio.sleep(5)
         await self.coordinator.async_request_refresh()
 
     async def async_turn_away_mode_off(self):
         """Turn away mode off."""
         await self.navilink.sendPowerControlRequest(int(self.channel),int(self.deviceNum),1)
+        await asyncio.sleep(5)
         await self.coordinator.async_request_refresh()
         
     async def async_set_operation_mode(self,operation_mode):
@@ -162,4 +166,5 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
         if operation_mode == STATE_GAS:
             mode = 1
         await self.navilink.sendPowerControlRequest(int(self.channel),int(self.deviceNum),mode)
+        await asyncio.sleep(5)
         await self.coordinator.async_request_refresh()

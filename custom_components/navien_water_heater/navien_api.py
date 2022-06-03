@@ -223,70 +223,65 @@ class NavienSmartControl:
         self.connected = False
         self.last_connect = None
         self.channelInfo= None
-        self.reading = False
+        self.queue = asyncio.Queue(maxsize=1)
 
-    async def connect(self,retry_count=3):
+    async def connect(self):
         """
         Connect to the binary API service
         
         :return: The response data (normally a channel information response)
         """
-        
-        retry_count = retry_count - 1 
-        
-        try:
-            if not self.connected:
-                self.reader, self.writer = await asyncio.open_connection(NavienSmartControl.navienTcpServer, NavienSmartControl.navienTcpServerSocketPort)
-            data = await self.send_and_receive((self.userID + "$" + "iPhone1.0" + "$" + self.gatewayID).encode())
-            parsedResponse = self.parseResponse(data)
-            self.channelInfo = parsedResponse
+        connection_attempts = 0
+        disconnected = True
+        while disconnected and connection_attempts < 60:
+            try:
+                self.reader, self.writer = await asyncio.wait_for(asyncio.open_connection(NavienSmartControl.navienTcpServer, NavienSmartControl.navienTcpServerSocketPort),timeout=3)
+                disconnected = False
+            except Exception as e:
+                _LOGGER.error(type(e).__name__)
+                connection_attempts += 1
+
+        try:    
+            self.channelInfo = self.parseResponse(await self.send_and_receive((self.userID + "$" + "iPhone1.0" + "$" + self.gatewayID).encode()))
             self.connected = True
             self.last_connect = datetime.now() 
-            return parsedResponse
+            return self.channelInfo
         except Exception as e:
-            _LOGGER.error(e)
-            if retry_count > 0:
-                return await self.connect(retry_count)
+            _LOGGER.error(type(e).__name__)
             
-    async def disconnect(self,retry_count=3):
+    async def disconnect(self):
         """
         Disconnect the from the API
         """
-        retry_count = retry_count - 1
         try:
-            if self.connected:
+            if not self.writer.is_closing():
                 self.writer.close()
-                await self.writer.wait_closed()
-                self.connected = False
-                self.writer = None
-                self.reader = None
+            await self.writer.wait_closed()
+            self.connected = False
+            self.writer = None
+            self.reader = None
         except Exception as e:
-            _LOGGER.error(e)
-            if retry_count > 0:
-                return await self.disconnect(retry_count)
+            _LOGGER.error(type(e).__name__)
 
-    async def send_and_receive(self,data,retry_count=3):
+    async def send_and_receive(self,data, read_response = True):
         """Attempt to send request and receive response from Navien TCP server"""
-        retry_count = retry_count - 1
-        wait_count = 0
-        while self.reading and wait_count < 5:
-            await asyncio.sleep(1)
-            wait_count = wait_count + 1
+        await self.queue.put("data received")
         try:
             self.writer.write(data)
             await self.writer.drain()
-            self.reading = True
-            received_data = await asyncio.wait_for(self.reader.read(1024),5)
-            self.reading = False
-            return received_data
+            received_data = None
+            if read_response:
+                received_data = await asyncio.wait_for(self.reader.read(1024),5)
+            await self.queue.get()
+            return received_data        
         except Exception as e:
-            _LOGGER.error(e)
-            self.reading = False
+            _LOGGER.error(type(e).__name__)
             await self.disconnect()
+            if self.queue.full():
+                await self.queue.get()
             await self.connect()
-            #if retry_count > 0:
-            #    return await self.send_and_receive(data,retry_count)
-           
+            return None 
+
 
     def parseResponse(self, data):
         """
@@ -297,37 +292,40 @@ class NavienSmartControl:
         :return: The parsed response data from the corresponding response-specific parser.
         """
         # The response is returned with a fixed header for the first 12 bytes
-        if len(data) > 12:
-            commonResponseColumns = collections.namedtuple(
-                "response",
-                [
-                    "deviceID",
-                    "countryCD",
-                    "controlType",
-                    "swVersionMajor",
-                    "swVersionMinor",
-                ],
-            )
-            commonResponseData = commonResponseColumns._make(
-                struct.unpack("8s B B B B", data[:12])
-            )
-            # Based on the controlType, parse the response accordingly
-            if commonResponseData.controlType == ControlType.CHANNEL_INFORMATION.value:
-                retval = self.parseChannelInformationResponse(commonResponseData, data)
-            elif commonResponseData.controlType == ControlType.STATE.value:
-                retval = self.parseStateResponse(commonResponseData, data)
-            elif commonResponseData.controlType == ControlType.TREND_SAMPLE.value:
-                retval = self.parseTrendSampleResponse(commonResponseData, data)
-            elif commonResponseData.controlType == ControlType.TREND_MONTH.value:
-                retval = self.parseTrendMYResponse(commonResponseData, data)
-            elif commonResponseData.controlType == ControlType.TREND_YEAR.value:
-                retval = self.parseTrendMYResponse(commonResponseData, data)
-            elif commonResponseData.controlType == ControlType.ERROR_CODE.value:
-                retval = self.parseErrorCodeResponse(commonResponseData, data)
+        if data is not None:
+            if len(data) > 12:
+                commonResponseColumns = collections.namedtuple(
+                    "response",
+                    [
+                        "deviceID",
+                        "countryCD",
+                        "controlType",
+                        "swVersionMajor",
+                        "swVersionMinor",
+                    ],
+                )
+                commonResponseData = commonResponseColumns._make(
+                    struct.unpack("8s B B B B", data[:12])
+                )
+                # Based on the controlType, parse the response accordingly
+                if commonResponseData.controlType == ControlType.CHANNEL_INFORMATION.value:
+                    retval = self.parseChannelInformationResponse(commonResponseData, data)
+                elif commonResponseData.controlType == ControlType.STATE.value:
+                    retval = self.parseStateResponse(commonResponseData, data)
+                elif commonResponseData.controlType == ControlType.TREND_SAMPLE.value:
+                    retval = self.parseTrendSampleResponse(commonResponseData, data)
+                elif commonResponseData.controlType == ControlType.TREND_MONTH.value:
+                    retval = self.parseTrendMYResponse(commonResponseData, data)
+                elif commonResponseData.controlType == ControlType.TREND_YEAR.value:
+                    retval = self.parseTrendMYResponse(commonResponseData, data)
+                elif commonResponseData.controlType == ControlType.ERROR_CODE.value:
+                    retval = self.parseErrorCodeResponse(commonResponseData, data)
+                else:
+                    retval = None
             else:
-                raise Exception("Error: Response control type is not recognized")
+                retval = None
         else:
-            raise Exception("Error: Response to request does not contain enough data to parse")
+            retval = None
 
         return retval
 
@@ -482,7 +480,7 @@ class NavienSmartControl:
                     struct.unpack("B B B", data[i2 + 45 + i5 : i2 + 45 + i5 + 3])
                 )
                 daySequences[i]["daySequence"][str(i4)] = daySequence._asdict()
-        if len(data) > 271:
+        if len(data) >= 273:
             stateResponseColumns2 = collections.namedtuple(
                 "response",
                 [
@@ -495,9 +493,9 @@ class NavienSmartControl:
                 ],
             )
             stateResponseData2 = stateResponseColumns2._make(
-                struct.unpack("B B B B B B", data[267:274])
+                struct.unpack("B B B B B B", data[267:273])
             )
-        else:
+        elif len(data) >= 271 and len(data) < 273:
             stateResponseColumns2 = collections.namedtuple(
                 "response",
                 [
@@ -508,11 +506,12 @@ class NavienSmartControl:
                 ],
             )
             stateResponseData2 = stateResponseColumns2._make(
-                struct.unpack("B B B B", data[267:272])
-            )
+                struct.unpack("B B B B", data[267:271])
+            )            
         tmpDaySequences = {"daySequences": daySequences}
         result = dict(stateResponseData._asdict(), **tmpDaySequences)
-        result.update(stateResponseData2._asdict())
+        if stateResponseData2 is not None:
+            result.update(stateResponseData2._asdict())
         result.update(commonResponseData._asdict())
         result["deviceID"] = bytes.hex(result["deviceID"])
         return result
@@ -680,6 +679,7 @@ class NavienSmartControl:
         controlItem,
         controlValue,
         WeeklyDay,
+        read_response,
     ):
         """
         Main handler for sending a request to the binary API
@@ -766,7 +766,7 @@ class NavienSmartControl:
             try:
                 await self.connect()
             except Exception as e:
-                _LOGGER.error(e)
+                _LOGGER.error(type(e).__name__)
 
         currentRequestTime = datetime.now()
         time_diff  = (currentRequestTime - self.last_connect).total_seconds()
@@ -776,16 +776,13 @@ class NavienSmartControl:
                 await self.disconnect()
                 await self.connect()                    
             except Exception as e:
-                _LOGGER.error(e)
+                _LOGGER.error(type(e).__name__)
         
         try:
-            data = await self.send_and_receive(sendData)
-            parsedResponse = self.parseResponse(data)
-            return parsedResponse
+            return self.parseResponse(await self.send_and_receive(sendData, read_response= True and read_response))
         except Exception as e:
-            _LOGGER.error(e)
-            raise Exception("Unable to obtain Navilink state")
-     
+            _LOGGER.error(type(e).__name__)
+            return None
 
     def initWeeklyDay(self):
         """
@@ -820,7 +817,9 @@ class NavienSmartControl:
             0x00,
             0x00,
             self.initWeeklyDay(),
+            read_response=True
         )
+
         return self.convertState(state,currentControlChannel,deviceNumber)
 
     async def sendChannelInfoRequest(self, currentControlChannel, deviceNumber):
@@ -914,6 +913,7 @@ class NavienSmartControl:
             DeviceControl.POWER.value,
             OnOFFFlag(powerState).value,
             self.initWeeklyDay(),
+            read_response = False
         )
 
     async def sendHeatControlRequest(
@@ -981,6 +981,7 @@ class NavienSmartControl:
                 DeviceControl.ON_DEMAND.value,
                 OnOFFFlag.ON.value,
                 self.initWeeklyDay(),
+                read_response = False
             )
 
     async def sendDeviceWeeklyControlRequest(
@@ -1025,6 +1026,7 @@ class NavienSmartControl:
             DeviceControl.WATER_TEMPERATURE.value,
             int(tempVal),
             self.initWeeklyDay(),
+            read_response = False
         )
 
     async def sendHeatingWaterTempControlRequest(
@@ -1238,83 +1240,85 @@ class NavienSmartControl:
             tmpWeeklyDay,
         )
 
-    def convertState(self, stateData,channel,deviceNum):
+    def convertState(self,stateData,channel,deviceNum):
         """
         Print State response data
         
         :param responseData: The parsed state response data
         :param temperatureType: The temperature type is used to determine if responses should be in metric or imperial units.
         """
+        if stateData is not None:
+            if self.channelInfo['channel'][str(channel)]['deviceTempFlag'] == TemperatureType.CELSIUS.value:
+                if stateData["deviceSorting"] in [
+                    DeviceSorting.NFC.value,
+                    DeviceSorting.NCB_H.value,
+                    DeviceSorting.NFB.value,
+                    DeviceSorting.NVW.value,
+                ]:
+                    GIUFactor = 100
+                else:
+                    GIUFactor = 10
+                stateData["gasInstantUse"] = round((self.bigHexToInt(stateData["gasInstantUse"]) * GIUFactor)/ 10.0, 1)
+                stateData["gasAccumulatedUse"] = round(self.bigHexToInt(stateData["gasAccumulatedUse"]) / 10.0, 1)
+                if stateData["deviceSorting"] in [
+                    DeviceSorting.NPE.value,
+                    DeviceSorting.NPN.value,
+                    DeviceSorting.NPE2.value,
+                    DeviceSorting.NCB.value,
+                    DeviceSorting.NFC.value,
+                    DeviceSorting.NCB_H.value,
+                    DeviceSorting.CAS_NPE.value,
+                    DeviceSorting.CAS_NPN.value,
+                    DeviceSorting.CAS_NPE2.value,
+                    DeviceSorting.NFB.value,
+                    DeviceSorting.NVW.value,
+                    DeviceSorting.CAS_NFB.value,
+                    DeviceSorting.CAS_NVW.value,
+                ]:
+                    stateData["hotWaterSettingTemperature"] = round(stateData["hotWaterSettingTemperature"] / 2.0, 1)
+                    if str(DeviceSorting(stateData["deviceSorting"]).name).startswith(
+                        "CAS_"
+                    ):
+                        stateData["hotWaterAverageTemperature"] = round(stateData["hotWaterAverageTemperature"] / 2.0, 1)
+                        stateData["inletAverageTemperature"] = round(stateData["inletAverageTemperature"] / 2.0, 1)
+                    stateData["hotWaterCurrentTemperature"] = round(stateData["hotWaterCurrentTemperature"] / 2.0, 1)
+                    stateData["hotWaterFlowRate"] = round(self.bigHexToInt(stateData["hotWaterFlowRate"]) / 10.0, 1)
+                    stateData["hotWaterTemperature"] = round(stateData["hotWaterTemperature"] / 2.0, 1)
+            elif self.channelInfo['channel'][str(channel)]['deviceTempFlag'] == TemperatureType.FAHRENHEIT.value:
+                if stateData["deviceSorting"] in [
+                    DeviceSorting.NFC.value,
+                    DeviceSorting.NCB_H.value,
+                    DeviceSorting.NFB.value,
+                    DeviceSorting.NVW.value,
+                ]:
+                    GIUFactor = 10
+                else:
+                    GIUFactor = 1
+                stateData["gasInstantUse"] = round(self.bigHexToInt(stateData["gasInstantUse"]) * GIUFactor * 3.968, 1)
+                stateData["gasAccumulatedUse"] = round((self.bigHexToInt(stateData["gasAccumulatedUse"]) * 35.314667) / 10.0, 1)
+                if stateData["deviceSorting"] in [
+                    DeviceSorting.NPE.value,
+                    DeviceSorting.NPN.value,
+                    DeviceSorting.NPE2.value,
+                    DeviceSorting.NCB.value,
+                    DeviceSorting.NFC.value,
+                    DeviceSorting.NCB_H.value,
+                    DeviceSorting.CAS_NPE.value,
+                    DeviceSorting.CAS_NPN.value,
+                    DeviceSorting.CAS_NPE2.value,
+                    DeviceSorting.NFB.value,
+                    DeviceSorting.NVW.value,
+                    DeviceSorting.CAS_NFB.value,
+                    DeviceSorting.CAS_NVW.value,
+                ]:
+                    stateData["hotWaterFlowRate"] = round((self.bigHexToInt(stateData["hotWaterFlowRate"]) / 3.785) / 10.0, 1)
 
-        if self.channelInfo['channel'][str(channel)]['deviceTempFlag'] == TemperatureType.CELSIUS.value:
-            if stateData["deviceSorting"] in [
-                DeviceSorting.NFC.value,
-                DeviceSorting.NCB_H.value,
-                DeviceSorting.NFB.value,
-                DeviceSorting.NVW.value,
-            ]:
-                GIUFactor = 100
-            else:
-                GIUFactor = 10
-            stateData["gasInstantUse"] = round((self.bigHexToInt(stateData["gasInstantUse"]) * GIUFactor)/ 10.0, 1)
-            stateData["gasAccumulatedUse"] = round(self.bigHexToInt(stateData["gasAccumulatedUse"]) / 10.0, 1)
-            if stateData["deviceSorting"] in [
-                DeviceSorting.NPE.value,
-                DeviceSorting.NPN.value,
-                DeviceSorting.NPE2.value,
-                DeviceSorting.NCB.value,
-                DeviceSorting.NFC.value,
-                DeviceSorting.NCB_H.value,
-                DeviceSorting.CAS_NPE.value,
-                DeviceSorting.CAS_NPN.value,
-                DeviceSorting.CAS_NPE2.value,
-                DeviceSorting.NFB.value,
-                DeviceSorting.NVW.value,
-                DeviceSorting.CAS_NFB.value,
-                DeviceSorting.CAS_NVW.value,
-            ]:
-                stateData["hotWaterSettingTemperature"] = round(stateData["hotWaterSettingTemperature"] / 2.0, 1)
-                if str(DeviceSorting(stateData["deviceSorting"]).name).startswith(
-                    "CAS_"
-                ):
-                    stateData["hotWaterAverageTemperature"] = round(stateData["hotWaterAverageTemperature"] / 2.0, 1)
-                    stateData["inletAverageTemperature"] = round(stateData["inletAverageTemperature"] / 2.0, 1)
-                stateData["hotWaterCurrentTemperature"] = round(stateData["hotWaterCurrentTemperature"] / 2.0, 1)
-                stateData["hotWaterFlowRate"] = round(self.bigHexToInt(stateData["hotWaterFlowRate"]) / 10.0, 1)
-                stateData["hotWaterTemperature"] = round(stateData["hotWaterTemperature"] / 2.0, 1)
-        elif self.channelInfo['channel'][str(channel)]['deviceTempFlag'] == TemperatureType.FAHRENHEIT.value:
-            if stateData["deviceSorting"] in [
-                DeviceSorting.NFC.value,
-                DeviceSorting.NCB_H.value,
-                DeviceSorting.NFB.value,
-                DeviceSorting.NVW.value,
-            ]:
-                GIUFactor = 10
-            else:
-                GIUFactor = 1
-            stateData["gasInstantUse"] = round(self.bigHexToInt(stateData["gasInstantUse"]) * GIUFactor * 3.968, 1)
-            stateData["gasAccumulatedUse"] = round((self.bigHexToInt(stateData["gasAccumulatedUse"]) * 35.314667) / 10.0, 1)
-            if stateData["deviceSorting"] in [
-                DeviceSorting.NPE.value,
-                DeviceSorting.NPN.value,
-                DeviceSorting.NPE2.value,
-                DeviceSorting.NCB.value,
-                DeviceSorting.NFC.value,
-                DeviceSorting.NCB_H.value,
-                DeviceSorting.CAS_NPE.value,
-                DeviceSorting.CAS_NPN.value,
-                DeviceSorting.CAS_NPE2.value,
-                DeviceSorting.NFB.value,
-                DeviceSorting.NVW.value,
-                DeviceSorting.CAS_NFB.value,
-                DeviceSorting.CAS_NVW.value,
-            ]:
-                stateData["hotWaterFlowRate"] = round((self.bigHexToInt(stateData["hotWaterFlowRate"]) / 3.785) / 10.0, 1)
-
-        stateData["controllerVersion"] = self.bigHexToInt(stateData["controllerVersion"])
-        stateData["pannelVersion"] = self.bigHexToInt(stateData["pannelVersion"])
-        stateData["errorCD"] = self.bigHexToInt(stateData["errorCD"])       
-        stateData["powerStatus"] = OnOFFFlag(stateData["powerStatus"]).value < 2
-        stateData["useOnDemand"] = OnDemandFlag(stateData["useOnDemand"]).name
-        stateData["weeklyControl"] = OnOFFFlag(stateData["weeklyControl"]).value < 2
-        return stateData
+            stateData["controllerVersion"] = self.bigHexToInt(stateData["controllerVersion"])
+            stateData["pannelVersion"] = self.bigHexToInt(stateData["pannelVersion"])
+            stateData["errorCD"] = self.bigHexToInt(stateData["errorCD"])       
+            stateData["powerStatus"] = OnOFFFlag(stateData["powerStatus"]).value < 2
+            stateData["useOnDemand"] = OnDemandFlag(stateData["useOnDemand"]).name
+            stateData["weeklyControl"] = OnOFFFlag(stateData["weeklyControl"]).value < 2
+            return stateData
+        else:
+            return None
