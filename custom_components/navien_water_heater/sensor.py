@@ -119,7 +119,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the Airthings sensor."""
+    """Set up the Navien sensor."""
 
     navilink,coordinator = hass.data[DOMAIN][entry.entry_id]
     sensors = []

@@ -220,9 +220,11 @@ class NavienSmartControl:
         self.gatewayID = gatewayID
         self.reader = None
         self.writer = None
-        self.connected = False
+        self.connecting = False
+        self.logged_in = False
         self.last_connect = None
-        self.channelInfo= None
+        self.channelInfo= {}
+        self.last_state = {}
         self.queue = asyncio.Queue(maxsize=1)
 
     async def connect(self):
@@ -231,19 +233,17 @@ class NavienSmartControl:
         
         :return: The response data (normally a channel information response)
         """
-        connection_attempts = 0
-        disconnected = True
-        while disconnected and connection_attempts < 60:
+        self.connecting = True
+        while self.connecting:
             try:
-                self.reader, self.writer = await asyncio.wait_for(asyncio.open_connection(NavienSmartControl.navienTcpServer, NavienSmartControl.navienTcpServerSocketPort),timeout=3)
-                disconnected = False
+                self.reader, self.writer = await asyncio.wait_for(asyncio.open_connection(NavienSmartControl.navienTcpServer, NavienSmartControl.navienTcpServerSocketPort),timeout=5)
+                self.connecting = False
             except Exception as e:
                 _LOGGER.error(type(e).__name__)
-                connection_attempts += 1
 
         try:    
             self.channelInfo = self.parseResponse(await self.send_and_receive((self.userID + "$" + "iPhone1.0" + "$" + self.gatewayID).encode()))
-            self.connected = True
+            self.logged_in = True
             self.last_connect = datetime.now() 
             return self.channelInfo
         except Exception as e:
@@ -257,7 +257,7 @@ class NavienSmartControl:
             if not self.writer.is_closing():
                 self.writer.close()
             await self.writer.wait_closed()
-            self.connected = False
+            self.logged_in = False
             self.writer = None
             self.reader = None
         except Exception as e:
@@ -271,7 +271,11 @@ class NavienSmartControl:
             await self.writer.drain()
             received_data = None
             if read_response:
-                received_data = await asyncio.wait_for(self.reader.read(1024),5)
+                try:
+                    received_data = await asyncio.wait_for(self.reader.read(1024),5)
+                except Exception as e:
+                    _LOGGER.error(type(e).__name__)
+            await asyncio.sleep(2)
             await self.queue.get()
             return received_data        
         except Exception as e:
@@ -679,7 +683,7 @@ class NavienSmartControl:
         controlItem,
         controlValue,
         WeeklyDay,
-        read_response,
+        read_response = True,
     ):
         """
         Main handler for sending a request to the binary API
@@ -762,26 +766,29 @@ class NavienSmartControl:
             ]
         )
         
-        if not self.connected:
+        if not self.connecting:
+            if not self.logged_in:
+                try:
+                    await self.connect()
+                except Exception as e:
+                    _LOGGER.error(type(e).__name__)
+
+            currentRequestTime = datetime.now()
+            time_diff  = (currentRequestTime - self.last_connect).total_seconds()
+
+            if time_diff >= 600:
+                try:
+                    await self.disconnect()
+                    await self.connect()                    
+                except Exception as e:
+                    _LOGGER.error(type(e).__name__)
+            
             try:
-                await self.connect()
+                return self.parseResponse(await self.send_and_receive(sendData, read_response = read_response))
             except Exception as e:
                 _LOGGER.error(type(e).__name__)
-
-        currentRequestTime = datetime.now()
-        time_diff  = (currentRequestTime - self.last_connect).total_seconds()
-
-        if time_diff >= 600:
-            try:
-                await self.disconnect()
-                await self.connect()                    
-            except Exception as e:
-                _LOGGER.error(type(e).__name__)
-        
-        try:
-            return self.parseResponse(await self.send_and_receive(sendData, read_response= True and read_response))
-        except Exception as e:
-            _LOGGER.error(type(e).__name__)
+                return None
+        else:
             return None
 
     def initWeeklyDay(self):
@@ -817,10 +824,10 @@ class NavienSmartControl:
             0x00,
             0x00,
             self.initWeeklyDay(),
-            read_response=True
         )
 
-        return self.convertState(state,currentControlChannel,deviceNumber)
+        self.last_state = self.convertState(state,currentControlChannel,deviceNumber)
+        return self.last_state
 
     async def sendChannelInfoRequest(self, currentControlChannel, deviceNumber):
         """
@@ -913,11 +920,10 @@ class NavienSmartControl:
             DeviceControl.POWER.value,
             OnOFFFlag(powerState).value,
             self.initWeeklyDay(),
-            read_response = False
         )
 
     async def sendHeatControlRequest(
-        self, currentControlChannel, deviceNumber, channelData, heatState
+        self, currentControlChannel, deviceNumber, heatState
     ):
         """
         Send device heat control request
@@ -930,7 +936,7 @@ class NavienSmartControl:
         if (
             NFBWaterFlag(
                 (
-                    channelData["channel"][str(currentControlChannel)]["wwsdFlag"]
+                    self.channelInfo["channel"][str(currentControlChannel)]["wwsdFlag"]
                     & WWSDMask.HOTWATER_POSSIBILITY.value
                 )
                 > 0
@@ -950,7 +956,7 @@ class NavienSmartControl:
             )
 
     async def sendOnDemandControlRequest(
-        self, currentControlChannel, deviceNumber, channelData
+        self, currentControlChannel, deviceNumber
     ):
         """
         Send device on demand control request
@@ -964,7 +970,7 @@ class NavienSmartControl:
         if (
             RecirculationFlag(
                 (
-                    channelData["channel"][str(currentControlChannel)]["wwsdFlag"]
+                    self.channelInfo["channel"][str(currentControlChannel)]["wwsdFlag"]
                     & WWSDMask.RECIRCULATION_POSSIBILITY.value
                 )
                 > 0
@@ -981,7 +987,6 @@ class NavienSmartControl:
                 DeviceControl.ON_DEMAND.value,
                 OnOFFFlag.ON.value,
                 self.initWeeklyDay(),
-                read_response = False
             )
 
     async def sendDeviceWeeklyControlRequest(
@@ -1229,7 +1234,6 @@ class NavienSmartControl:
         else:
             raise Exception("Error: unsupported action " + action)
 
-        # print(json.dumps(tmpWeeklyDay, indent=2, default=str))
         return await self.sendRequest(
             stateData["currentChannel"],
             stateData["deviceNumber"],
@@ -1247,7 +1251,7 @@ class NavienSmartControl:
         :param responseData: The parsed state response data
         :param temperatureType: The temperature type is used to determine if responses should be in metric or imperial units.
         """
-        if stateData is not None:
+        try:
             if self.channelInfo['channel'][str(channel)]['deviceTempFlag'] == TemperatureType.CELSIUS.value:
                 if stateData["deviceSorting"] in [
                     DeviceSorting.NFC.value,
@@ -1320,5 +1324,5 @@ class NavienSmartControl:
             stateData["useOnDemand"] = OnDemandFlag(stateData["useOnDemand"]).name
             stateData["weeklyControl"] = OnOFFFlag(stateData["weeklyControl"]).value < 2
             return stateData
-        else:
-            return None
+        except Exception as e:
+            return self.last_state
