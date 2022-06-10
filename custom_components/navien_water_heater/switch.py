@@ -68,7 +68,7 @@ class NavienOnDemandSwitchEntity(CoordinatorEntity, SwitchEntity):
     @property
     def name(self):
         """Return the name of the entity."""
-        return "Navien " + str(DeviceSorting(self._state["deviceSorting"]).name) + " CH " + self.channel + " Hot Button"
+        return str(DeviceSorting(self._state["deviceSorting"]).name) + " CH " + self.channel + " Hot Button"
 
     @property
     def unique_id(self):
