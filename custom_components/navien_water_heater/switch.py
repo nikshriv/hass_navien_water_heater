@@ -32,7 +32,7 @@ async def async_setup_entry(
     devices = []
     deviceNum = '1'
     for channel in coordinator.data["state"]:
-        if (channelInfo["channel"][str(channel)]["wwsdFlag"] & WWSDMask.RECIRCULATION_POSSIBILITY.value) > 0 :
+        if channelInfo["channel"][str(channel)]["useOnDemand"] ==  1:
             devices.append(NavienOnDemandSwitchEntity(coordinator, navilink, channel, deviceNum))
     if len(devices) > 0:
         async_add_entities(devices)
@@ -84,7 +84,7 @@ class NavienOnDemandSwitchEntity(CoordinatorEntity, SwitchEntity):
     @property
     def is_on(self):
         """Return the current On Demand state."""
-        return self._state["useOnDemand"] == 'ON' or self._state["useOnDemand"] == "WARMUP"
+        return self._state["useOnDemand"] == 1
 
     async def async_turn_on(self):
         """Toggle Hot Button."""
