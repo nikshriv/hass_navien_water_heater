@@ -32,7 +32,7 @@ async def async_setup_entry(
     devices = []
     deviceNum = '1'
     for channel in coordinator.data["state"]:
-        if (RecirculationFlag((channelInfo["channel"][str(channel)]["wwsdFlag"] & WWSDMask.RECIRCULATION_POSSIBILITY.value) > 0) == RecirculationFlag.ON):
+        if (channelInfo["channel"][str(channel)]["wwsdFlag"] & WWSDMask.RECIRCULATION_POSSIBILITY.value) > 0 :
             devices.append(NavienOnDemandSwitchEntity(coordinator, navilink, channel, deviceNum))
     if len(devices) > 0:
         async_add_entities(devices)
