@@ -1321,7 +1321,6 @@ class NavienSmartControl:
             stateData["pannelVersion"] = self.bigHexToInt(stateData["pannelVersion"])
             stateData["errorCD"] = self.bigHexToInt(stateData["errorCD"])       
             stateData["powerStatus"] = OnOFFFlag(stateData["powerStatus"]).value < 2
-            stateData["useOnDemand"] = OnDemandFlag(stateData["useOnDemand"]).name
             stateData["weeklyControl"] = OnOFFFlag(stateData["weeklyControl"]).value < 2
             return stateData
         except Exception as e:
