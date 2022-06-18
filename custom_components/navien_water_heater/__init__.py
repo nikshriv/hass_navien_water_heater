@@ -4,6 +4,7 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from datetime import timedelta
+from datetime import datetime
 import logging
 from .navien_api import (
     NavienSmartControl,
@@ -25,31 +26,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})
     navilink = NavienSmartControl(entry.data["username"],entry.data["gatewayID"])
-    channelInfo = await navilink.connect()
+    await navilink.connect()
     
     async def _update_method():
         """Get the latest data from Navien."""
-        deviceState = {}
-        deviceState["state"] = {}
-        deviceState["channelInfo"] = channelInfo
         try:
             for channelNum in range(1,4):
-                if channelInfo["channel"][str(channelNum)]["deviceSorting"] > 0:
-                    for deviceNum in range(1,channelInfo["channel"][str(channelNum)]["deviceCount"] + 1):
-                        deviceState["state"][str(channelNum)] = {}
-                        try:
-                            newState = await navilink.sendStateRequest(channelNum, deviceNum)
-                        except Exception as e:
-                            _LOGGER.error(e)
-                        if newState is not None:
-                            deviceState["state"][str(channelNum)][str(deviceNum)] = newState
-                        else:
-                            raise UpdateFailed
+                if navilink.channelInfo["channel"][str(channelNum)]["deviceSorting"] > 0:
+                    for deviceNum in range(1,navilink.channelInfo["channel"][str(channelNum)]["deviceCount"] + 1):
+                        time_diff = 15
+                        if navilink.last_state.get(str(channelNum)) is not None:
+                            time_diff  = (datetime.now() - navilink.last_state[str(channelNum)][str(deviceNum)]['last_update']).total_seconds()
+
+                        if time_diff > 5:                        
+                            await navilink.sendStateRequest(channelNum, deviceNum)
+
         except Exception as e:
-            _LOGGER.error(type(e).__name__)
+            _LOGGER.error(str(type(e).__name__) + ": " + str(e))
             raise UpdateFailed
             
-        return deviceState
+        return navilink.last_state
 
     coordinator = DataUpdateCoordinator(
         hass,
