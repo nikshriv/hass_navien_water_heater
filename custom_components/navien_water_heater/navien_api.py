@@ -240,6 +240,7 @@ class NavienSmartControl:
                 self.connecting = False
             except Exception as e:
                 _LOGGER.error(str(type(e).__name__) + ": " + str(e) + " This error occurred while attempting to reconnect to Navien server")
+                asyncio.sleep(15)
 
         try:
             channelInfo = await self.send_and_receive((self.userID + "$" + "iPhone1.0" + "$" + self.gatewayID).encode())
