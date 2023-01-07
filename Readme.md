@@ -7,3 +7,5 @@ Control and monitor the state of Navien water heaters that are connected by a Na
     **Category:** Integration
 2. Install module as usual
 3. Restart Home Assistant
+
+https://www.buymeacoffee.com/nikshriv
