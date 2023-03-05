@@ -14,7 +14,7 @@ For manual installation:
 2. Use the File Editor to create a directory called custom_components in your /config directory
 3. Create another directory called navien_water_heater in the custom_components directory.
 4. Clone my repository
-5. Then upload the entire content of the navient_water_heater directory from the repository into the navien_water_heater directory you created
+5. Then upload the entire content of the navien_water_heater directory from the repository into the navien_water_heater directory you created
 6. Restart HA
 7. Go to Device and Services under Settings in HA and add the Navien integration.
 
