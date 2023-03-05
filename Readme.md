@@ -1,14 +1,14 @@
 Navien Water Heater Custom Integration
 ============
-Control and monitor the state of Navien water heaters that are connected by a NaviLink hub. The integration has been completely rewritten to adjust to the recent changes to the backend. To install this integration, you can use HACS to perform the installation or you can do it manually. If your want to use HACS, you will first need to install the HACS integration which can be found at https://hacs.xyz/. Once your have HACS installed, follow these steps:
+Control and monitor the state of Navien water heaters that are connected by a NaviLink hub. The integration has been completely rewritten to adjust to the recent changes to the backend. To install this integration, you can use HACS to perform the installation or you can do it manually. If you want to use HACS, you will first need to install the HACS integration which can be found at https://hacs.xyz/. 
 
+To install the integration with HACS:
 1. Navigate to HACS and add a custom repository  
     **URL:** https://github.com/nikshriv/hass_navien_water_heater
     **Category:** Integration
 2. Install module as usual
 3. Restart Home Assistant
 
-=============
 For manual installation:
 1. Install the File Editor add-on from the HA Addon Store.
 2. Use the File Editor to create a directory called custom_components in your /config directory
