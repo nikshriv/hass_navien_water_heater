@@ -1,16 +1,11 @@
 """Support for Navien NaviLink sensors."""
-import logging
-
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
     SensorStateClass,
 )
-from .navien_api import (
-    DeviceSorting,
-    TemperatureType,
-)
+from .navien_api import (TemperatureType)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
@@ -29,87 +24,96 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
-from homeassistant.helpers.update_coordinator import (
-    CoordinatorEntity,
-)
-
 from .const import DOMAIN
-
-_LOGGER = logging.getLogger(__name__)
+from asyncio import sleep
 
 SENSORS = {
     "imperial":{
-        "averageCalorimeter": SensorEntityDescription(
-            key = "averageCalorimeter",
+        "avgCalorie": SensorEntityDescription(
+            key = "avgCalorie",
             device_class = SensorDeviceClass.POWER_FACTOR,
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=PERCENTAGE,
             name="Heating Capacity",
         ),
-        "gasInstantUse": SensorEntityDescription(
-            key = "gasInstantUse",
+        "gasInstantUsage": SensorEntityDescription(
+            key = "gasInstantUsage",
             device_class = None,
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=POWER_BTU_PER_HOUR,
-            name="Current Gas Usage",
+            name="Current Gas Use",
         ),
-        "gasAccumulatedUse": SensorEntityDescription(
-            key = "gasAccumulatedUse",
+        "accumulatedGasUsage": SensorEntityDescription(
+            key = "accumulatedGasUsage",
             device_class=SensorDeviceClass.GAS,
             state_class = SensorStateClass.TOTAL_INCREASING,
             native_unit_of_measurement=VOLUME_CUBIC_FEET,
-            name="Total Gas Usage",
+            name="Cumulative Gas Use",
         ),
-        "hotWaterFlowRate": SensorEntityDescription(
-            key = "hotWaterFlowRate",
+        "DHWFlowRate": SensorEntityDescription(
+            key = "DHWFlowRate",
             device_class = None,
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=FLOW_GALLONS_PER_MIN,
             name="Hot Water Flow",
         ),
-        "hotWaterTemperature": SensorEntityDescription(
-            key = "hotWaterTemperature",
+        "currentInletTemp": SensorEntityDescription(
+            key = "currentInletTemp",
             device_class = None,
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=TEMP_FAHRENHEIT,
-            name="Hot Water Inlet Temperature",
+            name="Inlet Temp",
+        ),
+        "currentOutletTemp": SensorEntityDescription(
+            key = "currentOutletTemp",
+            device_class = None,
+            state_class = SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement=TEMP_FAHRENHEIT,
+            name="Hot Water Temp",
         )
     },
     "metric":{
-        "averageCalorimeter": SensorEntityDescription(
-            key = "averageCalorimeter",
+        "avgCalorie": SensorEntityDescription(
+            key = "avgCalorie",
             device_class = SensorDeviceClass.POWER_FACTOR,
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=PERCENTAGE,
             name="Heating Capacity",
         ),
-        "gasInstantUse": SensorEntityDescription(
-            key = "gasInstantUse",
+        "gasInstantUsage": SensorEntityDescription(
+            key = "gasInstantUsage",
             device_class = None,
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=POWER_KCAL_PER_HOUR,
-            name="Current Gas Usage",
+            name="Current Gas Use",
         ),
-        "gasAccumulatedUse": SensorEntityDescription(
-            key = "gasAccumulatedUse",
+        "accumulatedGasUsage": SensorEntityDescription(
+            key = "accumulatedGasUsage",
             device_class=SensorDeviceClass.GAS,
             state_class = SensorStateClass.TOTAL_INCREASING,
             native_unit_of_measurement=VOLUME_CUBIC_METERS,
-            name="Total Gas Usage",
+            name="Cumulative Gas Use",
         ),
-        "hotWaterFlowRate": SensorEntityDescription(
-            key = "hotWaterFlowRate",
+        "DHWFlowRate": SensorEntityDescription(
+            key = "DHWFlowRate",
             device_class = None,
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=FLOW_LITERS_PER_MIN,
             name="Hot Water Flow",
         ),
-        "hotWaterTemperature": SensorEntityDescription(
-            key = "hotWaterTemperature",
+        "currentInletTemp": SensorEntityDescription(
+            key = "currentInletTemp",
             device_class = None,
             state_class = SensorStateClass.MEASUREMENT,
             native_unit_of_measurement=TEMP_CELSIUS,
-            name="Hot Water Inlet Temperature",
+            name="Inlet Temp",
+        ),
+        "currentOutletTemp": SensorEntityDescription(
+            key = "currentOutletTemp",
+            device_class = None,
+            state_class = SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement=TEMP_CELSIUS,
+            name="Hot Water Temp",
         )
     }
 }
@@ -121,32 +125,47 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Navien sensor."""
 
-    navilink,coordinator = hass.data[DOMAIN][entry.entry_id]
+    navilink = hass.data[DOMAIN][entry.entry_id]
     sensors = []
-    for channel in navilink.last_state:
-        units = "metric"
-        if navilink.channelInfo["channel"][channel]["deviceTempFlag"] == TemperatureType.FAHRENHEIT.value:
+    for channel in navilink.channels.values():
+        if channel.channel_info["temperatureType"] == TemperatureType.FAHRENHEIT.value:
             units = "imperial"
-        for deviceNum in navilink.last_state[channel]:
+        else:
+            units = "metric"
+        sensors.append(NavienSensor(navilink, channel, {}, SENSORS[units]["avgCalorie"],"avgCalorie"))
+        for unit_info in channel.channel_status.get("unitInfo",{}).get("unitStatusList",[]):
             for sensor_type in SENSORS[units]:
-                sensors.append(NavienSensor(navilink, coordinator, channel, deviceNum, SENSORS[units][sensor_type], sensor_type))
+                if sensor_type != "avgCalorie":
+                    sensors.append(NavienSensor(navilink, channel, unit_info, SENSORS[units][sensor_type], sensor_type))
     async_add_entities(sensors)
 
 
-class NavienSensor(CoordinatorEntity, SensorEntity):
+class NavienSensor(SensorEntity):
     """Representation of a Navien Sensor device."""
 
-    def __init__(self, navilink, coordinator, channel, deviceNum, sensor_description, sensor_type):
+    def __init__(self, navilink, channel, unit_info, sensor_description, sensor_type):
         """Initialize the sensor."""
-        super().__init__(coordinator)
-        self.sensor_description = sensor_description
         self.navilink = navilink
-        self.deviceNum = deviceNum
+        self.sensor_description = sensor_description
+        self.unit_number = unit_info.get("unitNumber","")
+        self.unit_info = unit_info
         self.channel = channel
-        self.gateway = navilink.channelInfo["deviceID"]
-        self.channelInfo = navilink.channelInfo["channel"][channel]
-        self._state = navilink.last_state[channel][deviceNum]
         self.sensor_type = sensor_type
+
+    async def async_added_to_hass(self) -> None:
+        """Run when this Entity has been added to HA."""
+        self.channel.register_callback(self.update_state)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Entity being removed from hass."""
+        self.channel.deregister_callback(self.update_state)
+
+    def update_state(self):
+        if len(self.unit_info):
+            for unit_info in self.channel.channel_status.get("unitInfo",{}).get("unitStatusList",[]):
+                if unit_info.get("unitNumber","") == self.unit_number:
+                    self.unit_info = unit_info
+        self.async_write_ha_state()
 
     @property
     def available(self):
@@ -157,20 +176,23 @@ class NavienSensor(CoordinatorEntity, SensorEntity):
     def device_info(self) -> DeviceInfo:
         """Return device registry information for this entity."""
         return DeviceInfo(
-            identifiers = {(DOMAIN, self.gateway + "_" + str(self.channel))},
+            identifiers = {(DOMAIN, self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "_" + str(self.channel.channel_number))},
             manufacturer = "Navien",
-            name = str(DeviceSorting(self._state["deviceSorting"]).name) + "_" + self.channel + "_" + self.deviceNum,
+            name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown") + " CH" + str(self.channel.channel_number),
         )
 
     @property
     def name(self):
         """Return the name of the entity."""
-        return str(DeviceSorting(self._state["deviceSorting"]).name) + " " + self.sensor_description.name
+        if unit_number := self.unit_info.get("unitNumber", None):
+            return "CH" + str(self.channel.channel_number) + "_UNIT" + str(unit_number) + " " + self.sensor_description.name
+        else:
+            return "CH" + str(self.channel.channel_number) + " " + self.sensor_description.name
 
     @property
     def unique_id(self):
         """Return the unique ID of the entity."""
-        return self.gateway + "_" + self.channel + "_" + self.deviceNum + "_" + self.sensor_type
+        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + str(self.channel.channel_number) + str(self.unit_info.get("unitNumber","")) + self.sensor_type
 
     @property
     def device_class(self) -> SensorDeviceClass:
@@ -182,11 +204,6 @@ class NavienSensor(CoordinatorEntity, SensorEntity):
         """Return the state class of this entity, if any."""
         return self.sensor_description.state_class
 
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        self._state = self.navilink.last_state[self.channel][self.deviceNum]
-        self.async_write_ha_state()
 
     @property
     def native_unit_of_measurement(self):
@@ -196,4 +213,7 @@ class NavienSensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self) -> StateType:
         """Return the value reported by the sensor."""
-        return self._state[self.sensor_type]
+        if self.sensor_type != "avgCalorie":
+            return self.unit_info.get(self.sensor_type,0)
+        else:
+            return self.channel.channel_status.get(self.sensor_type,0)

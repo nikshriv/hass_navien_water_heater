@@ -1,23 +1,593 @@
-""" 
-This module makes it possible to interact with Navien tankless water heater, 
-combi-boiler or boiler connected via NaviLink.
-
-Please refer to the documentation provided in the README.md,
-which can be found at https://github.com/rudybrian/PyNavienSmartControl/
-
-This is a modified version that uses async for easier integration with hass
-
-"""
-
-import aiohttp
 import asyncio
-import struct
-import collections
 import enum
 import json
-import logging 
+import logging
+import uuid
 from datetime import datetime
+import AWSIoTPythonSDK.MQTTLib as mqtt
+import aiohttp
+
 _LOGGER = logging.getLogger(__name__)
+
+class NavilinkConnect():
+
+    # The Navien server.
+    navienWebServer = "https://nlus.naviensmartcontrol.com/api/v2"
+
+    def __init__(self, userId, passwd, device_index = 0, polling_interval = 15, aws_cert_path = "AmazonRootCA1.pem", subscribe_all_topics=False):
+        """
+        Construct a new 'NavilinkConnect' object.
+
+        :param userId: The user ID used to log in to the mobile application
+        :param passwd: The corresponding user's password
+        :return: returns nothing
+        """
+        self.userId = userId
+        self.passwd = passwd
+        self.device_index = device_index
+        self.polling_interval = polling_interval
+        self.aws_cert_path = aws_cert_path
+        self.subscribe_all_topics = subscribe_all_topics
+        self.loop = asyncio.get_running_loop()
+        self.connected = False
+        self.shutting_down = False
+        self.user_info = None
+        self.device_info = None
+        self.client = None
+        self.client_id = ""
+        self.topics = None
+        self.messages = None
+        self.channels = {}
+        self.disconnect_event = asyncio.Event()
+        self.channel_info_event = None
+        self.response_events = {}
+        self.client_lock = asyncio.Lock()
+        self.last_poll = None
+
+    async def start(self):
+        if self.polling_interval > 0:
+            await self.login()
+            asyncio.create_task(self._start())
+            if len(self.channels) > 0:
+                return self.channels
+            else:
+                raise Exception("No Navien devices found with the given credentials")
+        else:
+            return await self.login()
+
+    async def _start(self):
+        while not self.shutting_down:
+            tasks = [
+                asyncio.create_task(self._poll_mqtt_server(), name = "Poll MQTT Server"),
+                asyncio.create_task(self._server_connection_lost(), name = "Connection Lost Event")
+            ]
+            done, pending = await asyncio.wait(tasks,return_when=asyncio.FIRST_EXCEPTION)
+            for task in done:
+                name = task.get_name()
+                exception = task.exception()
+                try:
+                    result = task.result()
+                except Exception as e:
+                    _LOGGER.error(str(type(e).__name__) + ": " + str(e))
+            for task in pending:
+                task.cancel()     
+            if not self.shutting_down:
+                _LOGGER.error("Connection to AWS IOT Navilink server lost, reconnecting in 15 seconds")
+                await asyncio.sleep(15)
+                await self.login()
+
+    async def login(self):
+        """
+        Login to the REST API and save user information
+        """
+        async with aiohttp.ClientSession() as session:
+            async with session.post(NavilinkConnect.navienWebServer + "/user/sign-in", json={"userId": self.userId, "password": self.passwd}) as response:
+                # If an error occurs this will raise it, otherwise it calls get_device and returns after device is obtained from the server
+                if response.status != 200:
+                    raise Exception("Login error, please try again")
+                response_data = await response.json()
+                try:
+                    response_data["data"]
+                    self.user_info = response_data["data"]
+                except:
+                    raise Exception("Error: Unexpected problem with user data")
+                
+                return await self._get_device_list()
+
+    async def _get_device_list(self):
+        headers = {"Authorization":self.user_info.get("token",{}).get("accessToken","")}
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.post(NavilinkConnect.navienWebServer + "/device/list", json={"offset":0,"count":20,"userId":self.userId}) as response:
+                # If an error occurs this will raise it, otherwise it returns the gateway list.
+                if response.status != 200:
+                    raise Exception("Unable to retrieve device list")
+                response_data = await response.json()
+                try:
+                    response_data["data"]
+                    device_info_list = response_data["data"]
+                    self.device_info = device_info_list[self.device_index]
+                except:
+                    raise Exception("Error: Unexpected problem with retrieving device list")
+                
+                if self.polling_interval > 0:
+                    await self._connect_aws_mqtt()
+                return device_info_list
+
+    async def _connect_aws_mqtt(self):
+        self.client_id = str(uuid.uuid4())
+        self.topics = Topics(self.user_info, self.device_info, self.client_id)
+        self.messages = Messages(self.device_info, self.client_id, self.topics)
+        accessKeyId = self.user_info.get("token",{}).get("accessKeyId",None)
+        secretKey = self.user_info.get("token",{}).get("secretKey",None)
+        sessionToken = self.user_info.get("token",{}).get("sessionToken",None)
+
+        if accessKeyId and secretKey and sessionToken:
+            self.client = mqtt.AWSIoTMQTTClient(clientID = self.client_id, protocolType=4, useWebsocket=True, cleanSession=True)
+            self.client.configureEndpoint(hostName= 'a1t30mldyslmuq-ats.iot.us-east-1.amazonaws.com', portNumber= 443)
+            self.client.configureUsernamePassword(username='?SDK=Android&Version=2.16.12', password=None)
+            self.client.configureLastWill(topic = self.topics.app_connection(), payload = json.dumps(self.messages.last_will(),separators=(',',':')), QoS=1, retain=False)
+            self.client.configureCredentials(self.aws_cert_path)
+            self.client.configureIAMCredentials(AWSAccessKeyID=accessKeyId, AWSSecretAccessKey=secretKey, AWSSessionToken=sessionToken)
+            self.client.configureConnectDisconnectTimeout(5)
+            self.client.onOffline=self._on_offline
+            self.client.onOnline=self._on_online
+            await self.loop.run_in_executor(None,self.client.connect)
+            await self._subscribe_to_topics()
+            await self._get_channel_info()
+            await self._get_channel_status_all(wait_for_response = True)
+            self.last_poll = datetime.now()
+        else:
+            raise Exception("Error: Please log in first")
+
+    async def _poll_mqtt_server(self):
+        time_delta = 0
+        while self.connected and not self.shutting_down:
+            if time_delta < self.polling_interval:
+                interval = self.polling_interval - time_delta
+            else:
+                interval = 0.1
+            await asyncio.sleep(self.polling_interval - time_delta)
+            pre_poll = datetime.now()
+            if not self.client_lock.locked():
+                await self._get_channel_status_all()
+            self.last_poll = datetime.now()
+            time_delta = (self.last_poll - pre_poll).total_seconds()
+        if not self.shutting_down:
+            raise Exception("Connection to AWS IOT Navilink server lost, attempting to reconnect...")
+
+    async def _server_connection_lost(self):
+        await self.disconnect_event.wait()
+        self.disconnect_event.clear()
+        await asyncio.sleep(5)
+        raise Exception("Lost connection to Navilink, reconnecting...")
+
+    async def disconnect(self):
+        if self.client and self.connected:
+            self.shutting_down = True
+            await self.loop.run_in_executor(None,self.client.disconnect)
+
+    def _on_online(self):
+        self.connected = True
+
+    def _on_offline(self):
+        self.connected = False
+        if not self.shutting_down:
+            self.disconnect_event.set()
+        _LOGGER.warning("Connection to Navilink server lost")
+
+    async def async_subscribe(self,topic,QoS=1,callback=None):
+        def subscribe():
+            self.client.subscribe(topic=topic,QoS=QoS,callback=callback)
+
+        async with self.client_lock:
+            await self.loop.run_in_executor(None,subscribe)
+
+    async def async_publish(self,topic,payload,QoS=1,session_id=""):
+        def publish():
+            self.client.publish(topic=topic,payload=json.dumps(payload,separators=(',',':')),QoS=QoS)
+        
+        async with self.client_lock:
+            await self.loop.run_in_executor(None,publish)
+
+        if response_event :=  self.response_events.get(session_id,None):
+            try:
+                await asyncio.wait_for(response_event.wait(),timeout=self.polling_interval)
+            except:
+                pass
+            response_event.clear()
+            self.response_events.pop(session_id)
+
+
+    async def _subscribe_to_topics(self):
+        await self.async_subscribe(topic=self.topics.channel_info_sub(),callback=self.handle_other)
+        await self.async_subscribe(topic=self.topics.channel_info_res(),callback=self.handle_channel_info)
+        await self.async_subscribe(topic=self.topics.control_fail(),callback=self.handle_other)
+        await self.async_subscribe(topic=self.topics.channel_status_sub(),callback=self.handle_other)
+        await self.async_subscribe(topic=self.topics.channel_status_res(),callback=self.handle_channel_status)
+        await self.async_subscribe(topic=self.topics.connection(),callback=self.handle_other)
+        await self.async_subscribe(topic=self.topics.disconnect(),callback=self.handle_other)
+        if self.subscribe_all_topics:
+            await self.async_subscribe(topic=self.topics.weekly_schedule_sub(),callback=self.handle_other)
+            await self.async_subscribe(topic=self.topics.weekly_schedule_res(),callback=self.handle_weekly_schedule)
+            await self.async_subscribe(topic=self.topics.simple_trend_sub(),callback=self.handle_other)
+            await self.async_subscribe(topic=self.topics.simple_trend_res(),callback=self.handle_simple_trend)
+            await self.async_subscribe(topic=self.topics.hourly_trend_sub(),callback=self.handle_other)
+            await self.async_subscribe(topic=self.topics.hourly_trend_res(),callback=self.handle_hourly_trend)
+            await self.async_subscribe(topic=self.topics.daily_trend_sub(),callback=self.handle_other)
+            await self.async_subscribe(topic=self.topics.daily_trend_res(),callback=self.handle_daily_trend)
+            await self.async_subscribe(topic=self.topics.monthly_trend_sub(),callback=self.handle_other)
+            await self.async_subscribe(topic=self.topics.monthly_trend_res(),callback=self.handle_monthly_trend)
+
+    async def _get_channel_info(self):
+        topic = self.topics.start()
+        payload = self.messages.channel_info()
+        session_id = self.get_session_id()
+        payload["sessionID"] = session_id
+        self.response_events[session_id] = asyncio.Event()
+        await self.async_publish(topic=topic,payload=payload,session_id=session_id)
+        if len(self.channels) == 0:
+            raise Exception("Unable to get channel information")
+
+    async def _get_channel_status_all(self,wait_for_response=False):
+        for channel in self.channels.values():
+            topic = self.topics.channel_status_req()
+            payload = self.messages.channel_status(channel.channel_number,channel.channel_info.get("unitCount",1))
+            session_id = self.get_session_id()
+            payload["sessionID"] = session_id
+            if wait_for_response:
+                self.response_events[session_id] = asyncio.Event()
+            else:
+                session_id = ""
+            await self.async_publish(topic=topic,payload=payload,session_id=session_id)
+
+    async def _get_channel_status(self,channel_number):
+        channel = self.channels.get(channel_number,{})
+        topic = self.topics.channel_status_req()
+        payload = self.messages.channel_status(channel.channel_number,channel.channel_info.get("unitCount",1))
+        session_id = self.get_session_id()
+        payload["sessionID"] = session_id
+        self.response_events[session_id] = asyncio.Event()
+        await self.async_publish(topic=topic,payload=payload,session_id=session_id)
+
+    async def _power_command(self,state,channel_number):
+        state_num = 2
+        if state:
+            state_num = 1
+        topic = self.topics.control()
+        payload = self.messages.power(state_num, channel_number)
+        session_id = self.get_session_id()
+        payload["sessionID"] = session_id
+        self.response_events[session_id] = asyncio.Event()
+        await self.async_publish(topic=topic,payload=payload,session_id=session_id)
+        await self._get_channel_status(channel_number)
+
+    async def _hot_button_command(self,state,channel_number):
+        state_num = 2
+        if state:
+            state_num = 1
+        topic = self.topics.control()
+        payload = self.messages.hot_button(state_num, channel_number)
+        session_id = self.get_session_id()
+        payload["sessionID"] = session_id
+        self.response_events[session_id] = asyncio.Event()
+        await self.async_publish(topic=topic,payload=payload,session_id=session_id)
+        await self._get_channel_status(channel_number)
+
+    async def _temperature_command(self,temp,channel_number):
+        topic = self.topics.control()
+        payload = self.messages.temperature(temp, channel_number)
+        session_id = self.get_session_id()
+        payload["sessionID"] = session_id
+        self.response_events[session_id] = asyncio.Event()
+        await self.async_publish(topic=topic,payload=payload,session_id=session_id)
+        await self._get_channel_status(channel_number)
+
+    def get_session_id(self):
+        return str(int(round((datetime.utcnow() - datetime(1970, 1, 1)).total_seconds()*1000)))
+
+    def handle_channel_info(self, client, userdata, message):
+        response = json.loads(message.payload)
+        channel_info = response.get("response",{})
+        session_id = response.get("sessionID","unknown")
+        self.channels = {channel.get("channelNumber",0):NavilinkChannel(channel.get("channelNumber",0),channel.get("channel",{}),self) for channel in channel_info.get("channelInfo",{}).get("channelList",[])}
+        if response_event := self.response_events.get(session_id,None):
+            response_event.set()
+
+    def handle_channel_status(self, client, userdata, message):
+        response = json.loads(message.payload)
+        channel_status = response.get("response",{}).get("channelStatus",{})
+        session_id = response.get("sessionID","unknown")
+        if channel := self.channels.get(channel_status.get("channelNumber",0),None):
+            channel.update_channel_status(channel_status.get("channel",{}))
+        if response_event := self.response_events.get(session_id,None):
+            response_event.set()
+        
+
+    def handle_weekly_schedule(self, client, userdata, message):
+        _LOGGER.info("WEEKLY SCHEDULE: " + message.payload.decode('utf-8') + '\n')
+
+    def handle_simple_trend(self, client, userdata, message):
+        _LOGGER.info("SIMPLE TREND: " + message.payload.decode('utf-8') + '\n')
+
+    def handle_hourly_trend(self, client, userdata, message):
+        _LOGGER.info("HOURLY TREND: " + message.payload.decode('utf-8') + '\n')
+
+    def handle_daily_trend(self, client, userdata, message):
+        _LOGGER.info("DAILY TREND: " + message.payload.decode('utf-8') + '\n')
+
+    def handle_monthly_trend(self, client, userdata, message):
+        _LOGGER.info("MONTHLY TREND: " + message.payload.decode('utf-8') + '\n')
+
+    def handle_other(self, client, userdata, message):
+        _LOGGER.info(message.payload.decode('utf-8') + '\n')
+
+class NavilinkChannel:
+
+    def __init__(self, channel_number, channel_info, hub) -> None:
+        self.channel_number = channel_number
+        self.channel_info = channel_info
+        self.hub = hub
+        self.callbacks = []
+        self.channel_status = {}
+        self.unit_list = {}
+        self.waiting_for_response = False
+
+    def register_callback(self,callback):
+        self.callbacks.append(callback)
+
+    def deregister_callback(self,callback):
+        if self.callbacks:
+            self.callbacks.pop(self.callbacks.index(callback))
+
+    def update_channel_status(self,channel_status):
+        self.channel_status = self.convert_values(channel_status)
+        if not self.waiting_for_response:
+            self.publish_update()
+
+    def publish_update(self):
+        if len(self.callbacks) > 0:
+            [callback() for callback in self.callbacks]
+
+    async def set_power_state(self,state):
+        if not self.waiting_for_response:
+            self.waiting_for_response = True
+            await self.hub._power_command(state,self.channel_number)
+            self.publish_update()
+            self.waiting_for_response = False
+
+    async def set_hot_button_state(self,state):
+        if not self.waiting_for_response:
+            self.waiting_for_response = True
+            await self.hub._hot_button_command(state,self.channel_number)
+            self.publish_update()
+            self.waiting_for_response = False
+
+    async def set_temperature(self,temp):
+        if not self.waiting_for_response:
+            self.waiting_for_response = True
+            await self.hub._temperature_command(temp,self.channel_number)
+            self.publish_update()
+            self.waiting_for_response = False
+
+
+
+    def convert_values(self,channel_status):
+        channel_status["powerStatus"] = channel_status["powerStatus"] == 1
+        channel_status["onDemandUseFlag"] = channel_status["onDemandUseFlag"] == 1
+        if self.channel_info.get("temperatureType",2) == TemperatureType.CELSIUS.value:
+            if channel_status["unitType"] in [DeviceSorting.NFC.value,DeviceSorting.NCB_H.value,DeviceSorting.NFB.value,DeviceSorting.NVW.value,]:
+                GIUFactor = 100
+            else:
+                GIUFactor = 10
+
+            if channel_status["unitType"] in [
+                DeviceSorting.NPE.value,
+                DeviceSorting.NPN.value,
+                DeviceSorting.NPE2.value,
+                DeviceSorting.NCB.value,
+                DeviceSorting.NFC.value,
+                DeviceSorting.NCB_H.value,
+                DeviceSorting.CAS_NPE.value,
+                DeviceSorting.CAS_NPN.value,
+                DeviceSorting.CAS_NPE2.value,
+                DeviceSorting.NFB.value,
+                DeviceSorting.NVW.value,
+                DeviceSorting.CAS_NFB.value,
+                DeviceSorting.CAS_NVW.value,
+            ]:
+                channel_status["DHWSettingTemp"] = round(channel_status["DHWSettingTemp"] / 2.0, 1)
+                channel_status["avgInletTemp"] = round(channel_status["avgInletTemp"] / 2.0, 1)
+                channel_status["avgOutletTemp"] = round(channel_status["avgOutletTemp"] / 2.0, 1)            
+                for i in range(channel_status.get("unitCount",0)):
+                    channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] = round((channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] * GIUFactor)/ 10.0, 1)
+                    channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] = round(channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] / 10.0, 1)
+                    channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] = round(channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] / 10.0, 1)
+                    channel_status["unitInfo"]["unitStatusList"][i]["currentOutletTemp"] = round(channel_status["unitInfo"]["unitStatusList"][i]["currentOutletTemp"] / 2.0, 1)
+                    channel_status["unitInfo"]["unitStatusList"][i]["currentInletTemp"] = round(channel_status["unitInfo"]["unitStatusList"][i]["currentInletTemp"] / 2.0, 1)
+        elif self.channel_info.get("temperatureType",2) == TemperatureType.FAHRENHEIT.value:
+            if channel_status["unitType"] in [DeviceSorting.NFC.value,DeviceSorting.NCB_H.value,DeviceSorting.NFB.value,DeviceSorting.NVW.value,]:
+                GIUFactor = 10
+            else:
+                GIUFactor = 1
+
+            if channel_status["unitType"] in [
+                DeviceSorting.NPE.value,
+                DeviceSorting.NPN.value,
+                DeviceSorting.NPE2.value,
+                DeviceSorting.NCB.value,
+                DeviceSorting.NFC.value,
+                DeviceSorting.NCB_H.value,
+                DeviceSorting.CAS_NPE.value,
+                DeviceSorting.CAS_NPN.value,
+                DeviceSorting.CAS_NPE2.value,
+                DeviceSorting.NFB.value,
+                DeviceSorting.NVW.value,
+                DeviceSorting.CAS_NFB.value,
+                DeviceSorting.CAS_NVW.value,
+            ]:
+                for i in range(channel_status.get("unitCount",0)):
+                    channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] = round(channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] * GIUFactor * 3.968, 1)
+                    channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] = round(channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] * 35.314667 / 10.0, 1)
+                    channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] = round(channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] / 37.85, 1)
+
+        return channel_status
+
+class Topics:
+
+    def __init__(self, user_info, device_info, client_id) -> None:
+        self.user_seq = str(user_info.get("userInfo",{}).get("userSeq",""))
+        self.mac_address = device_info.get("deviceInfo",{}).get("macAddress","")
+        self.home_seq = str(device_info.get("deviceInfo",{}).get("homeSeq",""))
+        self.device_type = str(device_info.get("deviceInfo",{}).get("deviceType",""))
+        self.client_id = client_id
+        self.req = f'cmd/{self.device_type}/navilink-{self.mac_address}/'
+        self.res = f'cmd/{self.device_type}/{self.home_seq}/{self.user_seq}/{self.client_id}/res/'
+
+    def start(self):
+        return self.req + 'status/start'
+
+    def channel_info_sub(self):
+        return self.req + 'res/channelinfo'
+
+    def channel_info_res(self):
+        return self.res + 'channelinfo'
+    
+    def control_fail(self):
+        return self.req + 'res/controlfail'
+    
+    def channel_status_sub(self):
+        return self.req + 'res/channelstatus'
+
+    def channel_status_req(self):
+        return self.req + 'status/channelstatus'
+
+    def channel_status_res(self):
+        return self.res + 'channelstatus'
+
+    def weekly_schedule_sub(self):
+        return self.req + 'res/weeklyschedule'
+
+    def weekly_schedule_req(self):
+        return self.req + 'status/weeklyschedule'
+
+    def weekly_schedule_res(self):
+        return self.res + 'weeklyschedule'
+
+    def simple_trend_sub(self):
+        return self.req + 'res/simpletrend'
+
+    def simple_trend_req(self):
+        return self.req + 'status/simpletrend'
+
+    def simple_trend_res(self):
+        return self.res + 'simpletrend'
+
+    def hourly_trend_sub(self):
+        return self.req + 'res/hourlytrend'
+
+    def hourly_trend_req(self):
+        return self.req + 'status/hourlytrend'
+
+    def hourly_trend_res(self):
+        return self.res + 'hourlytrend'
+
+    def daily_trend_sub(self):
+        return self.req + 'res/dailytrend'
+
+    def daily_trend_req(self):
+        return self.req + 'status/dailytrend'
+
+    def daily_trend_res(self):
+        return self.res + 'dailytrend'
+
+    def monthly_trend_sub(self):
+        return self.req + 'res/monthlytrend'
+
+    def monthly_trend_req(self):
+        return self.req + 'status/monthlytrend'
+
+    def monthly_trend_res(self):
+        return self.res + 'monthlytrend'
+
+    def control(self):
+        return self.req + 'control'
+
+    def connection(self):
+        return self.req + 'connection'
+
+    def disconnect(self):
+        return 'evt/+/mobile/event/disconnect-mqtt'
+
+    def app_connection(self):
+        return f'evt/1/navilink-{self.mac_address}/app-connection'
+
+class Messages:
+
+    def __init__(self, device_info, client_id, topics) -> None:
+        self.mac_address = device_info.get("deviceInfo",{}).get("macAddress","")
+        self.device_type = int(device_info.get("deviceInfo",{}).get("deviceType",1))
+        self.additional_value = device_info.get("deviceInfo",{}).get("additionalValue","")   
+        self.client_id = client_id
+        self.topics = topics
+
+    def channel_info(self):
+        return {
+            "clientID": self.client_id,
+            "protocolVersion":1,
+            "request":{"additionalValue":self.additional_value,"command":16777217,"deviceType":self.device_type,"macAddress":self.mac_address},
+            "requestTopic":self.topics.start(),
+            "responseTopic":self.topics.channel_info_res(),
+            "sessionID":""
+        }
+
+    def channel_status(self,channel_number,unit_count):
+        return {
+            "clientID": self.client_id,
+            "protocolVersion":1,
+            "request":{"additionalValue":self.additional_value,"command":16777220,"deviceType":self.device_type,"macAddress":self.mac_address,"status":{"channelNumber":channel_number,"unitNumberEnd":unit_count,"unitNumberStart":1}},
+            "requestTopic": self.topics.channel_status_req(),
+            "responseTopic": self.topics.channel_status_res(),
+            "sessionID": ""
+        }
+
+    def power(self, state, channel_number):
+        return {
+            "clientID": self.client_id,
+            "protocolVersion":1,
+            "request":{"additionalValue":self.additional_value,"command":33554433,"control":{"channelNumber":channel_number,"mode":"power","param":[state]},"deviceType":self.device_type,"macAddress":self.mac_address},
+            "requestTopic": self.topics.control(),
+            "responseTopic": self.topics.channel_status_res(),
+            "sessionID": ""
+        }
+
+    def hot_button(self, state, channel_number):
+        return {
+            "clientID": self.client_id,
+            "protocolVersion":1,
+            "request":{"additionalValue":self.additional_value,"command":33554437,"control":{"channelNumber":channel_number,"mode":"onDemand","param":[state]},"deviceType":self.device_type,"macAddress":self.mac_address},
+            "requestTopic": self.topics.control(),
+            "responseTopic": self.topics.channel_status_res(),
+            "sessionID": ""
+        }
+
+    def temperature(self, temp, channel_number):
+        return {
+            "clientID": self.client_id,
+            "protocolVersion":1,
+            "request":{"additionalValue":self.additional_value,"command":33554435,"control":{"channelNumber":channel_number,"mode":"DHWTemperature","param":[temp]},"deviceType":self.device_type,"macAddress":self.mac_address},
+            "requestTopic": self.topics.control(),
+            "responseTopic": self.topics.channel_status_res(),
+            "sessionID": ""
+        }
+
+    def last_will(self):
+        return {
+            "clientID": self.client_id,
+            "event":{"additionalValue":self.additional_value,"connection":{"os":"A","status":0},"deviceType":self.device_type,"macAddress":self.mac_address},
+            "protocolVersion":1,
+            "requestTopic": self.topics.app_connection(),
+            "sessionID": ""
+        }
 
 class ControlType(enum.Enum):
     UNKNOWN = 0
@@ -141,748 +711,3 @@ class DeviceControl(enum.Enum):
     ON_DEMAND = 5
     WEEKLY = 6
     RECIRCULATION_TEMPERATURE = 7
-
-
-class AutoVivification(dict):
-    """Implementation of perl's autovivification feature."""
-
-    def __getitem__(self, item):
-        try:
-            return dict.__getitem__(self, item)
-        except KeyError:
-            value = self[item] = type(self)()
-            return value
-
-class NavienAccountInfo:
-
-    # The Navien server.
-    navienWebServer = "https://uscv2.naviensmartcontrol.com"
-
-    def __init__(self, userID, passwd):
-        """
-        Construct a new 'NavienSmartControl' object.
-
-        :param userID: The user ID used to log in to the mobile application
-        :param passwd: The corresponding user's password
-        :return: returns nothing
-        """
-        self.userID = userID
-        self.passwd = passwd
-
-    async def login(self):
-        """
-        Login to the REST API
-        
-        :return: The REST API response
-        """
-        async with aiohttp.ClientSession() as session:
-            async with session.post(NavienAccountInfo.navienWebServer + "/api/requestDeviceList", json={"userID": self.userID, "password": self.passwd}) as response:
-                # If an error occurs this will raise it, otherwise it returns the gateway list.
-                return await self.handleResponse(response)
-
-    async def handleResponse(self, response):
-        """
-        HTTP response handler
-
-        :param response: The response returned by the REST API request
-        :return: The gateway list JSON in dictionary form
-        """
-        # We need to check for the HTTP response code before attempting to parse the data
-        if response.status != 200:
-            raise Exception("Login error, please try again")
-
-        response_data = await response.json()
-
-        try:
-            response_data["data"]
-            gateway_data = json.loads(response_data["data"])
-        except NameError:
-            raise Exception("Error: Unexpected JSON response to gateway list request.")
-
-        return gateway_data
-    
-
-class NavienSmartControl:
-    """The main NavienSmartControl class"""
-
-    # The Navien TCP server.
-    navienTcpServer = "uscv2.naviensmartcontrol.com"
-    navienTcpServerSocketPort = 6001
-
-    def __init__(self, userID, gatewayID):
-        """
-        Construct a new 'NavienSmartControl' object.
-
-        :param userID: The user ID used to log in to the mobile application
-        :return: returns nothing
-        """
-        self.userID = userID
-        self.gatewayID = gatewayID
-        self.reader = None
-        self.writer = None
-        self.connecting = False
-        self.logged_in = False
-        self.last_connect = None
-        self.channelInfo= {}
-        self.last_state = {}
-        self.queue = asyncio.Queue(maxsize=1)
-
-    async def connect(self):
-        """
-        Connect to the binary API service
-        
-        :return: The response data (normally a channel information response)
-        """
-        self.connecting = True
-        while self.connecting:
-            try:
-                self.reader, self.writer = await asyncio.wait_for(asyncio.open_connection(NavienSmartControl.navienTcpServer, NavienSmartControl.navienTcpServerSocketPort),timeout=5)
-                self.connecting = False
-            except Exception as e:
-                _LOGGER.error(str(type(e).__name__) + ": " + str(e) + " This error occurred while attempting to reconnect to Navien server")
-                asyncio.sleep(15)
-
-        try:
-            channelInfo = await self.send_and_receive((self.userID + "$" + "iPhone1.0" + "$" + self.gatewayID).encode())
-            if channelInfo.get('channel') is not None:
-                self.channelInfo = channelInfo
-                self.logged_in = True
-                self.last_connect = datetime.now() 
-        except Exception as e:
-            _LOGGER.error(str(type(e).__name__) + ": " + str(e))
-        finally:
-            return self.channelInfo
-
-    async def disconnect(self):
-        """
-        Disconnect the from the API
-        """
-        try:
-            if not self.writer.is_closing():
-                self.writer.close()
-            await self.writer.wait_closed()
-        except Exception as e:
-            _LOGGER.error(str(type(e).__name__) + ": " + str(e))
-        finally:
-            self.logged_in = False
-            self.writer = None
-            self.reader = None
-            return True
-
-    async def send_and_receive(self,data, read_response = True):
-        """Attempt to send request and receive response from Navien TCP server"""
-        await self.queue.put("data received")
-        received_data = None
-        try:
-            self.writer.write(data)
-            await self.writer.drain()
-            if read_response:
-                received_data = await asyncio.wait_for(self.reader.read(1024),5)
-        except ConnectionResetError as e:
-            _LOGGER.error("Connection reset by Navien server, reconnecting...")
-            self.logged_in = False
-            self.writer = None
-            self.reader = None
-        except Exception as e:
-            _LOGGER.error(str(type(e).__name__) + ": " + str(e))
-        finally:
-            await self.queue.get()
-            return self.parseResponse(received_data)        
-
-
-
-    def parseResponse(self, data):
-        """
-        Main handler for handling responses from the binary protocol.
-        This function passes on the response data to the appopriate response-specific parsing function.
-
-        :param data: Data received from a response
-        :return: The parsed response data from the corresponding response-specific parser.
-        """
-        # The response is returned with a fixed header for the first 12 bytes
-        if data is not None:
-            if len(data) > 12:
-                commonResponseColumns = collections.namedtuple(
-                    "response",
-                    [
-                        "deviceID",
-                        "countryCD",
-                        "controlType",
-                        "swVersionMajor",
-                        "swVersionMinor",
-                    ],
-                )
-                commonResponseData = commonResponseColumns._make(
-                    struct.unpack("8s B B B B", data[:12])
-                )
-                # Based on the controlType, parse the response accordingly
-                if commonResponseData.controlType == ControlType.CHANNEL_INFORMATION.value:
-                    retval = self.parseChannelInformationResponse(commonResponseData, data)
-                elif commonResponseData.controlType == ControlType.STATE.value:
-                    retval = self.parseStateResponse(commonResponseData, data)
-                else:
-                    retval = None
-            else:
-                retval = None
-        else:
-            retval = None
-
-        return retval
-
-    def parseChannelInformationResponse(self, commonResponseData, data):
-        """
-        Parse channel information response
-        
-        :param commonResponseData: The common response data from the response header
-        :param data: The full channel information response data
-        :return: The parsed channel information response data
-        """
-        # This tells us which serial channels are in use
-        try:
-            chanUse = data[12]
-            fwVersion = int(
-                commonResponseData.swVersionMajor * 100 + commonResponseData.swVersionMinor
-            )
-            channelResponseData = {}
-            if fwVersion > 1500:
-                chanOffset = 15
-            else:
-                chanOffset = 13
-
-            if chanUse != ChannelUse.UNKNOWN.value:
-                if fwVersion < 1500:
-                    channelResponseColumns = collections.namedtuple(
-                        "response",
-                        [
-                            "channel",
-                            "deviceSorting",
-                            "deviceCount",
-                            "deviceTempFlag",
-                            "minimumSettingWaterTemperature",
-                            "maximumSettingWaterTemperature",
-                            "heatingMinimumSettingWaterTemperature",
-                            "heatingMaximumSettingWaterTemperature",
-                            "useOnDemand",
-                            "heatingControl",
-                            "wwsdFlag",
-                            "highTemperature",
-                            "useWarmWater",
-                        ],
-                    )
-                    for x in range(3):
-                        tmpChannelResponseData = channelResponseColumns._make(
-                            struct.unpack(
-                                "B B B B B B B B B B B B B",
-                                data[
-                                    (13 + chanOffset * x) : (13 + chanOffset * x)
-                                    + chanOffset
-                                ],
-                            )
-                        )
-                        channelResponseData[str(x + 1)] = tmpChannelResponseData._asdict()
-                        channelResponseData[str(x + 1)]["useOnDemand"] = OnDemandFlag(channelResponseData[str(x + 1)]["useOnDemand"]).value == 1
-                else:
-                    channelResponseColumns = collections.namedtuple(
-                        "response",
-                        [
-                            "channel",
-                            "deviceSorting",
-                            "deviceCount",
-                            "deviceTempFlag",
-                            "minimumSettingWaterTemperature",
-                            "maximumSettingWaterTemperature",
-                            "heatingMinimumSettingWaterTemperature",
-                            "heatingMaximumSettingWaterTemperature",
-                            "useOnDemand",
-                            "heatingControl",
-                            "wwsdFlag",
-                            "highTemperature",
-                            "useWarmWater",
-                            "minimumSettingRecirculationTemperature",
-                            "maximumSettingRecirculationTemperature",
-                        ],
-                    )
-                    for x in range(3):
-                        tmpChannelResponseData = channelResponseColumns._make(
-                            struct.unpack(
-                                "B B B B B B B B B B B B B B B",
-                                data[
-                                    (13 + chanOffset * x) : (13 + chanOffset * x)
-                                    + chanOffset
-                                ],
-                            )
-                        )
-                        channelResponseData[str(x + 1)] = tmpChannelResponseData._asdict()
-                        channelResponseData[str(x + 1)]["useOnDemand"] = OnDemandFlag(channelResponseData[str(x + 1)]["useOnDemand"]).value == 1
-                tmpChannelResponseData = {"channel": channelResponseData}
-                result = dict(commonResponseData._asdict(), **tmpChannelResponseData)
-                result["deviceID"] = bytes.hex(result["deviceID"])
-                return result
-            else:
-                return {}
-        except:
-            return {}
-
-    def parseStateResponse(self, commonResponseData, data):
-        """
-        Parse state response
-        
-        :param commonResponseData: The common response data from the response header
-        :param data: The full state response data
-        :return: The parsed state response data
-        """
-        try:
-            stateResponseColumns = collections.namedtuple(
-                "response",
-                [
-                    "controllerVersion",
-                    "pannelVersion",
-                    "deviceSorting",
-                    "deviceCount",
-                    "currentChannel",
-                    "deviceNumber",
-                    "errorCD",
-                    "operationDeviceNumber",
-                    "averageCalorimeter",
-                    "gasInstantUse",
-                    "gasAccumulatedUse",
-                    "hotWaterSettingTemperature",
-                    "hotWaterCurrentTemperature",
-                    "hotWaterFlowRate",
-                    "hotWaterTemperature",
-                    "heatSettingTemperature",
-                    "currentWorkingFluidTemperature",
-                    "currentReturnWaterTemperature",
-                    "powerStatus",
-                    "heatStatus",
-                    "useOnDemand",
-                    "weeklyControl",
-                    "totalDaySequence",
-                ],
-            )
-            stateResponseData = stateResponseColumns._make(
-                struct.unpack(
-                    "2s 2s B B B B 2s B B 2s 4s B B 2s B B B B B B B B B", data[12:43]
-                )
-            )
-
-            # Load each of the 7 daily sets of day sequences
-            daySequenceResponseColumns = collections.namedtuple(
-                "response", ["hour", "minute", "isOnOFF"]
-            )
-
-            daySequences = AutoVivification()
-            for i in range(7):
-                i2 = i * 32
-                i3 = i2 + 43
-                # Note Python 2.x doesn't convert these properly, so need to explicitly unpack them
-                daySequences[i]["dayOfWeek"] = self.bigHexToInt(data[i3])
-                weeklyTotalCount = self.bigHexToInt(data[i2 + 44])
-                for i4 in range(weeklyTotalCount):
-                    i5 = i4 * 3
-                    daySequence = daySequenceResponseColumns._make(
-                        struct.unpack("B B B", data[i2 + 45 + i5 : i2 + 45 + i5 + 3])
-                    )
-                    daySequences[i]["daySequence"][str(i4)] = daySequence._asdict()
-            if len(data) >= 273:
-                stateResponseColumns2 = collections.namedtuple(
-                    "response",
-                    [
-                        "hotWaterAverageTemperature",
-                        "inletAverageTemperature",
-                        "supplyAverageTemperature",
-                        "returnAverageTemperature",
-                        "recirculationSettingTemperature",
-                        "recirculationCurrentTemperature",
-                    ],
-                )
-                stateResponseData2 = stateResponseColumns2._make(
-                    struct.unpack("B B B B B B", data[267:273])
-                )
-            elif len(data) >= 271 and len(data) < 273:
-                stateResponseColumns2 = collections.namedtuple(
-                    "response",
-                    [
-                        "hotWaterAverageTemperature",
-                        "inletAverageTemperature",
-                        "supplyAverageTemperature",
-                        "returnAverageTemperature",
-                    ],
-                )
-                stateResponseData2 = stateResponseColumns2._make(
-                    struct.unpack("B B B B", data[267:271])
-                )            
-            tmpDaySequences = {"daySequences": daySequences}
-            result = dict(stateResponseData._asdict(), **tmpDaySequences)
-            if stateResponseData2 is not None:
-                result.update(stateResponseData2._asdict())
-            result.update(commonResponseData._asdict())
-            result["deviceID"] = bytes.hex(result["deviceID"])
-        except:
-            result = {}
-        finally:
-            return result
-
-    def parseErrorCodeResponse(self, commonResponseData, data):
-        """
-        Parse error code response
-        
-        :param commonResponseData: The common response data from the response header
-        :param data: The full error response data
-        :return: The parsed error response data
-        """
-        errorResponseColumns = collections.namedtuple(
-            "response",
-            [
-                "controllerVersion",
-                "pannelVersion",
-                "deviceSorting",
-                "deviceCount",
-                "currentChannel",
-                "deviceNumber",
-                "errorFlag",
-                "errorCD",
-            ],
-        )
-        errorResponseData = errorResponseColumns._make(
-            struct.unpack("2s 2s B B B B B 2s", data[12:23])
-        )
-        result = errorResponseData._asdict()
-        result.update(commonResponseData._asdict())
-        return result
-
-    def bigHexToInt(self, hex):
-        """
-        Convert from a list of big endian hex byte array or string to an integer
-        
-        :param hex: Big-endian string, int or byte array to be converted
-        :return: Integer after little-endian conversion
-        """
-        if isinstance(hex, str):
-            hex = bytearray(hex)
-        if isinstance(hex, int):
-            # This is already an int, just return it
-            return hex
-        bigEndianStr = "".join("%02x" % b for b in hex)
-        littleHex = bytearray.fromhex(bigEndianStr)
-        littleHex.reverse()
-        littleHexStr = "".join("%02x" % b for b in littleHex)
-        return int(littleHexStr, 16)
-
-    async def sendRequest(
-        self,
-        currentControlChannel,
-        deviceNumber,
-        controlSorting,
-        infoItem,
-        controlItem,
-        controlValue,
-        WeeklyDay,
-        read_response = True,
-    ):
-        """
-        Main handler for sending a request to the binary API
-        
-        :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
-        :param deviceNumber: The device number on the serial bus corresponding with the device
-        :param controlSorting: Corresponds with the ControlSorting enum (info or control)
-        :param infoItem: Corresponds with the ControlType enum
-        :param controlItem: Corresponds with the ControlType enum when controlSorting is control
-        :param controlValue: Value being changed when controlling
-        :param WeeklyDay: WeeklyDay dictionary (values are ignored when not changing schedule, but must be present)
-        :return: Parsed response data
-        
-        """
-        try:
-            requestHeader = {
-                "stx": 0x07,
-                "did": 0x99,
-                "reserve": 0x00,
-                "cmd": 0xA6,
-                "dataLength": 0x37,
-                "dSid": 0x00,
-            }
-            sendData = bytearray(
-                [
-                    requestHeader["stx"],
-                    requestHeader["did"],
-                    requestHeader["reserve"],
-                    requestHeader["cmd"],
-                    requestHeader["dataLength"],
-                    requestHeader["dSid"],
-                ]
-            )
-            gwID = bytes.fromhex(self.gatewayID)
-            sendData.extend(gwID)
-            sendData.extend(
-                [
-                    0x01,  # commandCount
-                    currentControlChannel,
-                    deviceNumber,
-                    controlSorting,
-                    infoItem,
-                    controlItem,
-                    controlValue,
-                ]
-            )
-            sendData.extend(
-                [
-                    WeeklyDay["WeeklyDay"],
-                    WeeklyDay["WeeklyCount"],
-                    WeeklyDay["1_Hour"],
-                    WeeklyDay["1_Minute"],
-                    WeeklyDay["1_Flag"],
-                    WeeklyDay["2_Hour"],
-                    WeeklyDay["2_Minute"],
-                    WeeklyDay["2_Flag"],
-                    WeeklyDay["3_Hour"],
-                    WeeklyDay["3_Minute"],
-                    WeeklyDay["3_Flag"],
-                    WeeklyDay["4_Hour"],
-                    WeeklyDay["4_Minute"],
-                    WeeklyDay["4_Flag"],
-                    WeeklyDay["5_Hour"],
-                    WeeklyDay["5_Minute"],
-                    WeeklyDay["5_Flag"],
-                    WeeklyDay["6_Hour"],
-                    WeeklyDay["6_Minute"],
-                    WeeklyDay["6_Flag"],
-                    WeeklyDay["7_Hour"],
-                    WeeklyDay["7_Minute"],
-                    WeeklyDay["7_Flag"],
-                    WeeklyDay["8_Hour"],
-                    WeeklyDay["8_Minute"],
-                    WeeklyDay["8_Flag"],
-                    WeeklyDay["9_Hour"],
-                    WeeklyDay["9_Minute"],
-                    WeeklyDay["9_Flag"],
-                    WeeklyDay["10_Hour"],
-                    WeeklyDay["10_Minute"],
-                    WeeklyDay["10_Flag"],
-                ]
-            )
-            
-            if not self.connecting:
-                if not self.logged_in:
-                    await self.connect()
-                
-                time_diff  = (datetime.now() - self.last_connect).total_seconds()
-                
-                if time_diff >= 600:
-                    await self.disconnect()
-                    await self.connect()                    
-                
-                response = await self.send_and_receive(sendData, read_response = read_response)
-        except Exception as e:
-            response = {}
-            _LOGGER.error(str(type(e).__name__) + ": " + str(e))
-        finally:
-            return response
-
-    def initWeeklyDay(self):
-        """
-        Helper function to initialize and populate the WeeklyDay dict
-        
-        :return: An initialized but empty weeklyDay dict
-        """
-        weeklyDay = {}
-        weeklyDay["WeeklyDay"] = 0x00
-        weeklyDay["WeeklyCount"] = 0x00
-        for i in range(1, 11):
-            weeklyDay[str(i) + "_Hour"] = 0x00
-            weeklyDay[str(i) + "_Minute"] = 0x00
-            weeklyDay[str(i) + "_Flag"] = 0x00
-        return weeklyDay
-
-    # ----- Convenience methods for sending requests ----- #
-
-    async def sendStateRequest(self, currentControlChannel, deviceNumber):
-        """
-        Send state request
-        
-        :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
-        :param deviceNumber: The device number on the serial bus corresponding with the device
-        :return: Parsed response data
-        """
-
-        state = await self.sendRequest(
-            currentControlChannel,
-            deviceNumber,
-            ControlSorting.INFO.value,
-            ControlType.STATE.value,
-            0x00,
-            0x00,
-            self.initWeeklyDay(),
-        )
-
-        return self.uodate_last_state(state,currentControlChannel,deviceNumber)
-
-    async def sendPowerControlRequest(
-        self, currentControlChannel, deviceNumber, powerState
-    ):
-        """
-        Send device power control request
-        
-        :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
-        :param deviceNumber: The device number on the serial bus corresponding with the device
-        :param powerState: The power state as identified in the OnOFFFlag enum
-        :return: Parsed response data
-        """
-        state = await self.sendRequest(
-            currentControlChannel,
-            deviceNumber,
-            ControlSorting.CONTROL.value,
-            ControlType.UNKNOWN.value,
-            DeviceControl.POWER.value,
-            OnOFFFlag(powerState).value,
-            self.initWeeklyDay(),
-        )
-
-        return self.uodate_last_state(state,currentControlChannel,deviceNumber)
-
-    async def sendOnDemandControlRequest(
-        self, currentControlChannel, deviceNumber
-    ):
-        """
-        Send device on demand control request
-
-        Note that no additional state parameter is required as this is the equivalent of pressing the HotButton.
-
-        :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
-        :param deviceNumber: The device number on the serial bus corresponding with the device
-        :return: Parsed response data
-        """
-        state = await self.sendRequest(
-            currentControlChannel,
-            deviceNumber,
-            ControlSorting.CONTROL.value,
-            ControlType.UNKNOWN.value,
-            DeviceControl.ON_DEMAND.value,
-            OnOFFFlag.ON.value,
-            self.initWeeklyDay(),
-        )
-
-        return self.uodate_last_state(state,currentControlChannel,deviceNumber)
-
-    async def sendWaterTempControlRequest(
-        self, currentControlChannel, deviceNumber, tempVal
-    ):
-        """
-        Send device water temperature control request
-        
-        :param currentControlChannel: The serial port channel on the Navilink that the device is connected to
-        :param deviceNumber: The device number on the serial bus corresponding with the device
-        :param channelData: The parsed channel information data used to determine limits and units
-        :param tempVal: The temperature to set
-        :return: Parsed response data
-        """
-        state = await self.sendRequest(
-            currentControlChannel,
-            deviceNumber,
-            ControlSorting.CONTROL.value,
-            ControlType.UNKNOWN.value,
-            DeviceControl.WATER_TEMPERATURE.value,
-            int(tempVal),
-            self.initWeeklyDay(),
-            read_response = False
-        )
-
-        return self.uodate_last_state(state,currentControlChannel,deviceNumber)
-
-    def uodate_last_state(self,stateData,channel,deviceNum):
-        """
-        Print State response data
-        
-        :param responseData: The parsed state response data
-        :param temperatureType: The temperature type is used to determine if responses should be in metric or imperial units.
-        """
-
-        try:
-            if self.channelInfo['channel'][str(channel)]['deviceTempFlag'] == TemperatureType.CELSIUS.value:
-                if stateData["deviceSorting"] in [
-                    DeviceSorting.NFC.value,
-                    DeviceSorting.NCB_H.value,
-                    DeviceSorting.NFB.value,
-                    DeviceSorting.NVW.value,
-                ]:
-                    GIUFactor = 100
-                else:
-                    GIUFactor = 10
-                stateData["gasInstantUse"] = round((self.bigHexToInt(stateData["gasInstantUse"]) * GIUFactor)/ 10.0, 1)
-                stateData["gasAccumulatedUse"] = round(self.bigHexToInt(stateData["gasAccumulatedUse"]) / 10.0, 1)
-                if stateData["deviceSorting"] in [
-                    DeviceSorting.NPE.value,
-                    DeviceSorting.NPN.value,
-                    DeviceSorting.NPE2.value,
-                    DeviceSorting.NCB.value,
-                    DeviceSorting.NFC.value,
-                    DeviceSorting.NCB_H.value,
-                    DeviceSorting.CAS_NPE.value,
-                    DeviceSorting.CAS_NPN.value,
-                    DeviceSorting.CAS_NPE2.value,
-                    DeviceSorting.NFB.value,
-                    DeviceSorting.NVW.value,
-                    DeviceSorting.CAS_NFB.value,
-                    DeviceSorting.CAS_NVW.value,
-                ]:
-                    stateData["hotWaterSettingTemperature"] = round(stateData["hotWaterSettingTemperature"] / 2.0, 1)
-                    if str(DeviceSorting(stateData["deviceSorting"]).name).startswith(
-                        "CAS_"
-                    ):
-                        stateData["hotWaterAverageTemperature"] = round(stateData["hotWaterAverageTemperature"] / 2.0, 1)
-                        stateData["inletAverageTemperature"] = round(stateData["inletAverageTemperature"] / 2.0, 1)
-                    stateData["hotWaterCurrentTemperature"] = round(stateData["hotWaterCurrentTemperature"] / 2.0, 1)
-                    stateData["hotWaterFlowRate"] = round(self.bigHexToInt(stateData["hotWaterFlowRate"]) / 10.0, 1)
-                    stateData["hotWaterTemperature"] = round(stateData["hotWaterTemperature"] / 2.0, 1)
-            elif self.channelInfo['channel'][str(channel)]['deviceTempFlag'] == TemperatureType.FAHRENHEIT.value:
-                if stateData["deviceSorting"] in [
-                    DeviceSorting.NFC.value,
-                    DeviceSorting.NCB_H.value,
-                    DeviceSorting.NFB.value,
-                    DeviceSorting.NVW.value,
-                ]:
-                    GIUFactor = 10
-                else:
-                    GIUFactor = 1
-                stateData["gasInstantUse"] = round(self.bigHexToInt(stateData["gasInstantUse"]) * GIUFactor * 3.968, 1)
-                stateData["gasAccumulatedUse"] = round((self.bigHexToInt(stateData["gasAccumulatedUse"]) * 35.314667) / 10.0, 1)
-                if stateData["deviceSorting"] in [
-                    DeviceSorting.NPE.value,
-                    DeviceSorting.NPN.value,
-                    DeviceSorting.NPE2.value,
-                    DeviceSorting.NCB.value,
-                    DeviceSorting.NFC.value,
-                    DeviceSorting.NCB_H.value,
-                    DeviceSorting.CAS_NPE.value,
-                    DeviceSorting.CAS_NPN.value,
-                    DeviceSorting.CAS_NPE2.value,
-                    DeviceSorting.NFB.value,
-                    DeviceSorting.NVW.value,
-                    DeviceSorting.CAS_NFB.value,
-                    DeviceSorting.CAS_NVW.value,
-                ]:
-                    stateData["hotWaterFlowRate"] = round((self.bigHexToInt(stateData["hotWaterFlowRate"]) / 3.785) / 10.0, 1)
-
-            stateData["controllerVersion"] = self.bigHexToInt(stateData["controllerVersion"])
-            stateData["pannelVersion"] = self.bigHexToInt(stateData["pannelVersion"])
-            stateData["errorCD"] = self.bigHexToInt(stateData["errorCD"])       
-            stateData["powerStatus"] = OnOFFFlag(stateData["powerStatus"]).value < 2
-            stateData["useOnDemand"] = OnDemandFlag(stateData["useOnDemand"]).value == 1
-            stateData["weeklyControl"] = OnOFFFlag(stateData["weeklyControl"]).value < 2
-            
-            if self.last_state.get(str(channel)) is None:
-                self.last_state[str(channel)] = {}
-            self.last_state[str(channel)][str(deviceNum)] = stateData
-        except Exception as e:
-            if self.last_state.get(str(channel)) is not None:
-                if stateData is not None:
-                    if stateData.get('channel') is not None and self.last_state[str(channel)][str(deviceNum)].get("hotWaterFlowRate") is not None:
-                        if self.last_state[str(channel)][str(deviceNum)]["hotWaterFlowRate"] == 0:
-                            #This condition sometimes arises when the power is off and there is hot water flow
-                            self.last_state[str(channel)][str(deviceNum)]["hotWaterFlowRate"] = 0.1 
-            else:
-                self.last_state[str(channel)] = {}
-                self.last_state[str(channel)][str(deviceNum)] = {}
-        finally:
-            self.last_state[str(channel)][str(deviceNum)]["last_update"] = datetime.now()
-            return self.last_state

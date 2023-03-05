@@ -1,6 +1,5 @@
 """Support for Navien NaviLink water heaters."""
 import logging
-import asyncio
 
 from homeassistant.components.water_heater import (
     WaterHeaterEntity,
@@ -11,17 +10,10 @@ from homeassistant.components.water_heater import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, STATE_OFF, TEMP_CELSIUS, TEMP_FAHRENHEIT
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.update_coordinator import (
-    CoordinatorEntity
-)
-from .navien_api import (
-    DeviceSorting,
-    TemperatureType,
-)
-
+from .navien_api import TemperatureType
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -35,27 +27,19 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     """Set up Navien water heater based on a config entry."""
-    navilink,coordinator = hass.data[DOMAIN][entry.entry_id]
+    navilink = hass.data[DOMAIN][entry.entry_id]
     devices = []
-    deviceNum = '1'
-    for channel in navilink.last_state:
-        devices.append(NavienWaterHeaterEntity(coordinator, navilink, channel, deviceNum))
+    for channel in navilink.channels.values():
+        devices.append(NavienWaterHeaterEntity(channel,navilink))
     async_add_entities(devices)
 
 
-class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
+class NavienWaterHeaterEntity(WaterHeaterEntity):
     """Define a Navien water heater."""
 
-    def __init__(self, coordinator, navilink, channel, deviceNum):
-        """Pass coordinator to CoordinatorEntity."""
-        super().__init__(coordinator)
-        self.coordinator = coordinator
-        self.deviceNum = deviceNum
-        self.navilink = navilink
+    def __init__(self, channel, navilink):
         self.channel = channel
-        self.gatewayID = navilink.channelInfo["deviceID"]
-        self.channelInfo = navilink.channelInfo["channel"][channel]
-        self._state = navilink.last_state[channel][deviceNum]
+        self.navilink = navilink
 
     @property
     def available(self):
@@ -66,32 +50,34 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     def device_info(self) -> DeviceInfo:
         """Return device registry information for this entity."""
         return DeviceInfo(
-            identifiers = {(DOMAIN, self.gatewayID + "_" + str(self.channel))},
+            identifiers = {(DOMAIN, self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "_" + str(self.channel.channel_number))},
             manufacturer = "Navien",
-            name = str(DeviceSorting(self._state["deviceSorting"]).name) + "_" + self.channel,
+            name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown") + " CH" + str(self.channel.channel_number),
         )
 
     @property
     def name(self):
         """Return the name of the entity."""
-        return "Navien " + str(DeviceSorting(self._state["deviceSorting"]).name) + " CH " + self.channel
+        return self.navilink.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " CH" + str(self.channel.channel_number)
 
     @property
     def unique_id(self):
         """Return the unique ID of the entity."""
-        return self.gatewayID + "_" + self.channel + "_" + self.deviceNum
+        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + str(self.channel.channel_number)
 
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        self._state = self.navilink.last_state[self.channel][self.deviceNum]
-        self.async_write_ha_state()
+    async def async_added_to_hass(self) -> None:
+        """Run when this Entity has been added to HA."""
+        self.channel.register_callback(self.async_write_ha_state)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Entity being removed from hass."""
+        self.channel.deregister_callback(self.async_write_ha_state)
 
     @property
     def temperature_unit(self):
         """Return temperature unit."""
         temp_unit = TEMP_CELSIUS
-        if self.channelInfo["deviceTempFlag"] == TemperatureType.FAHRENHEIT.value:
+        if self.channel.channel_info["temperatureType"] == TemperatureType.FAHRENHEIT.value:
             temp_unit = TEMP_FAHRENHEIT
 
         return temp_unit
@@ -99,7 +85,7 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     @property
     def is_away_mode_on(self):
         """Return true if away mode is on."""
-        return not(self._state["powerStatus"])
+        return not(self.channel.channel_status.get("powerStatus",False))
 
     @property
     def supported_features(self):
@@ -109,9 +95,8 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     @property
     def current_operation(self):
         """Return current operation."""
-        power_status = self._state["powerStatus"]
         _current_op = STATE_OFF
-        if power_status:
+        if self.channel.channel_status.get("powerStatus",False):
             _current_op = STATE_GAS
         return _current_op
 
@@ -123,49 +108,46 @@ class NavienWaterHeaterEntity(CoordinatorEntity, WaterHeaterEntity):
     @property
     def current_temperature(self):
         """Return the current hot water temperature."""
-        return self._state["hotWaterCurrentTemperature"]
+        unit_list = self.channel.channel_status.get("unitInfo",{}).get("unitStatusList",[])
+        if len(unit_list) > 0:
+            return round(sum([unit_info.get("currentOutletTemp") for unit_info in unit_list])/len(unit_list))
+        else:
+            _LOGGER.warning("No channel status information available for " + self.name)
 
     @property
     def target_temperature(self):
         """Return the temperature we try to reach."""
-        return self._state["hotWaterSettingTemperature"]
+        return self.channel.channel_status.get("DHWSettingTemp",0)
 
     @property
     def min_temp(self):
         """Return the minimum temperature."""
-        return self.channelInfo["minimumSettingWaterTemperature"]
+        return self.channel.channel_info.get("setupDHWTempMin",0)
 
     @property
     def max_temp(self):
         """Return the maximum temperature."""
-        return self.channelInfo["maximumSettingWaterTemperature"]
+        return self.channel.channel_info.get("setupDHWTempMax",0)
 
     async def async_set_temperature(self,**kwargs):
         """Set target water temperature"""
         if (target_temp := kwargs.get(ATTR_TEMPERATURE)) is not None:
-            new_state = await self.navilink.sendWaterTempControlRequest(int(self.channel),int(self.deviceNum),target_temp)
-            self._state = new_state[self.channel][self.deviceNum]
-            self.async_write_ha_state()
+            await self.channel.set_temperature(target_temp)
         else:
             _LOGGER.error("A target temperature must be provided")
 
     async def async_turn_away_mode_on(self):
         """Turn away mode on."""
-        new_state = await self.navilink.sendPowerControlRequest(int(self.channel),int(self.deviceNum),2)
-        self._state = new_state[self.channel][self.deviceNum]
-        self.async_write_ha_state()
+        await self.channel.set_power_state(False)
 
     async def async_turn_away_mode_off(self):
         """Turn away mode off."""
-        new_state = await self.navilink.sendPowerControlRequest(int(self.channel),int(self.deviceNum),1)
-        self._state = new_state[self.channel][self.deviceNum]
-        self.async_write_ha_state()
+        await self.channel.set_power_state(True)
 
     async def async_set_operation_mode(self,operation_mode):
         """Set operation mode"""
-        mode = 2
         if operation_mode == STATE_GAS:
-            mode = 1
-        new_state = await self.navilink.sendPowerControlRequest(int(self.channel),int(self.deviceNum),mode)
-        self._state = new_state[self.channel][self.deviceNum]
-        self.async_write_ha_state()
+            power_state = True
+        else:
+            power_state = False
+        await self.channel.set_power_state(power_state)
