@@ -68,11 +68,11 @@ class NavienOnDemandSwitchEntity(SwitchEntity):
 
     async def async_turn_on(self):
         """Turn On Hot Button."""
-        self.channel.set_hot_button_state(True)
+        await self.channel.set_hot_button_state(True)
 
     async def async_turn_off(self):
         """Turn Off Hot Button."""
-        self.channel.set_hot_button_state(False)
+        await self.channel.set_hot_button_state(False)
 
 
 class NavienPowerSwitchEntity(SwitchEntity):

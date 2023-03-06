@@ -132,6 +132,8 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
     async def async_set_temperature(self,**kwargs):
         """Set target water temperature"""
         if (target_temp := kwargs.get(ATTR_TEMPERATURE)) is not None:
+            if self.temperature_unit == TEMP_CELSIUS:
+                target_temp = round(2 * target_temp)
             await self.channel.set_temperature(target_temp)
         else:
             _LOGGER.error("A target temperature must be provided")

@@ -325,7 +325,7 @@ class NavilinkChannel:
 
     def __init__(self, channel_number, channel_info, hub) -> None:
         self.channel_number = channel_number
-        self.channel_info = channel_info
+        self.channel_info = self.convert_channel_info(channel_info)
         self.hub = hub
         self.callbacks = []
         self.channel_status = {}
@@ -340,7 +340,7 @@ class NavilinkChannel:
             self.callbacks.pop(self.callbacks.index(callback))
 
     def update_channel_status(self,channel_status):
-        self.channel_status = self.convert_values(channel_status)
+        self.channel_status = self.convert_channel_status(channel_status)
         if not self.waiting_for_response:
             self.publish_update()
 
@@ -369,9 +369,7 @@ class NavilinkChannel:
             self.publish_update()
             self.waiting_for_response = False
 
-
-
-    def convert_values(self,channel_status):
+    def convert_channel_status(self,channel_status):
         channel_status["powerStatus"] = channel_status["powerStatus"] == 1
         channel_status["onDemandUseFlag"] = channel_status["onDemandUseFlag"] == 1
         if self.channel_info.get("temperatureType",2) == TemperatureType.CELSIUS.value:
@@ -432,6 +430,13 @@ class NavilinkChannel:
 
         return channel_status
 
+    def convert_channel_info(self,channel_info):
+        if channel_info.get("temperatureType",2) == TemperatureType.CELSIUS.value:
+            channel_info["setupDHWTempMin"] = round(channel_info["setupDHWTempMin"]/ 2.0, 1)
+            channel_info["setupDHWTempMax"] = round(channel_info["setupDHWTempMax"]/ 2.0, 1)
+
+        return channel_info
+        
 class Topics:
 
     def __init__(self, user_info, device_info, client_id) -> None:
