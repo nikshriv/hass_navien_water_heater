@@ -9,7 +9,7 @@ from homeassistant.components.water_heater import (
     SUPPORT_OPERATION_MODE,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_TEMPERATURE, STATE_OFF, TEMP_CELSIUS, TEMP_FAHRENHEIT
+from homeassistant.const import ATTR_TEMPERATURE, STATE_OFF, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import DeviceInfo
@@ -30,21 +30,22 @@ async def async_setup_entry(
     navilink = hass.data[DOMAIN][entry.entry_id]
     devices = []
     for channel in navilink.channels.values():
-        devices.append(NavienWaterHeaterEntity(channel,navilink))
+        devices.append(NavienWaterHeaterEntity(hass, channel,navilink))
     async_add_entities(devices)
 
 
 class NavienWaterHeaterEntity(WaterHeaterEntity):
     """Define a Navien water heater."""
 
-    def __init__(self, channel, navilink):
+    def __init__(self, hass, channel, navilink):
+        self.hass = hass
         self.channel = channel
         self.navilink = navilink
 
     @property
     def available(self):
         """Return if the the device is online or not."""
-        return True
+        return self.channel.is_available()
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -76,10 +77,9 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
     @property
     def temperature_unit(self):
         """Return temperature unit."""
-        temp_unit = TEMP_CELSIUS
+        temp_unit = UnitOfTemperature.CELSIUS
         if self.channel.channel_info["temperatureType"] == TemperatureType.FAHRENHEIT.value:
-            temp_unit = TEMP_FAHRENHEIT
-
+            temp_unit = UnitOfTemperature.FAHRENHEIT
         return temp_unit
 
     @property
@@ -131,12 +131,19 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
 
     async def async_set_temperature(self,**kwargs):
         """Set target water temperature"""
-        if (target_temp := kwargs.get(ATTR_TEMPERATURE)) is not None:
-            if self.temperature_unit == TEMP_CELSIUS:
+        hass_units = "us_customary" if self.hass.config.units.temperature_unit == UnitOfTemperature.FAHRENHEIT else "metric"
+        navien_units = "us_customary" if self.channel.channel_info.get("temperatureType",2) == TemperatureType.FAHRENHEIT.value else "metric"
+        target_temp = kwargs.get(ATTR_TEMPERATURE)
+        if hass_units == navien_units:
+            if self.temperature_unit == UnitOfTemperature.CELSIUS:
                 target_temp = round(2 * target_temp)
-            await self.channel.set_temperature(target_temp)
         else:
-            _LOGGER.error("A target temperature must be provided")
+            if hass_units == "metric":
+                target_temp == round((target_temp*9/5) + 32)
+            else:
+                target_temp == round((target_temp-32)*10/9)
+        await self.channel.set_temperature(target_temp)
+
 
     async def async_turn_away_mode_on(self):
         """Turn away mode on."""

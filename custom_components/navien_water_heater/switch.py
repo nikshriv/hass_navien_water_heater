@@ -40,7 +40,7 @@ class NavienOnDemandSwitchEntity(SwitchEntity):
     @property
     def available(self):
         """Return if the the device is online or not."""
-        return True
+        return self.channel.is_available()
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -93,7 +93,7 @@ class NavienPowerSwitchEntity(SwitchEntity):
     @property
     def available(self):
         """Return if the the device is online or not."""
-        return True
+        return self.channel.is_available()
 
     @property
     def device_info(self) -> DeviceInfo:

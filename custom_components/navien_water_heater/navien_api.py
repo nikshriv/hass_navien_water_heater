@@ -437,6 +437,9 @@ class NavilinkChannel:
 
         return channel_info
         
+    def is_available(self):
+        return self.hub.connected
+
 class Topics:
 
     def __init__(self, user_info, device_info, client_id) -> None:
