@@ -3,7 +3,7 @@ import enum
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime,timedelta
 import AWSIoTPythonSDK.MQTTLib as mqtt
 import aiohttp
 
@@ -56,25 +56,25 @@ class NavilinkConnect():
             return await self.login()
 
     async def _start(self):
-        while not self.shutting_down:
+        if not self.shutting_down:
             tasks = [
                 asyncio.create_task(self._poll_mqtt_server(), name = "Poll MQTT Server"),
-                asyncio.create_task(self._server_connection_lost(), name = "Connection Lost Event")
+                asyncio.create_task(self._server_connection_lost(), name = "Connection Lost Event"),
+                asyncio.create_task(self._refresh_connection(), name = "Reresh Connection")
             ]
             done, pending = await asyncio.wait(tasks,return_when=asyncio.FIRST_EXCEPTION)
             for task in done:
                 name = task.get_name()
-                exception = task.exception()
                 try:
-                    result = task.result()
+                    task.result()
                 except Exception as e:
-                    _LOGGER.error(str(type(e).__name__) + ": " + str(e))
+                    _LOGGER.error(name + ": " + str(type(e).__name__) + ": " + str(e))
             for task in pending:
                 task.cancel()     
             if not self.shutting_down:
-                _LOGGER.error("Connection to AWS IOT Navilink server lost, reconnecting in 15 seconds")
+                _LOGGER.warning("Connection to AWS IOT Navilink server reset, reconnecting in 15 seconds")
                 await asyncio.sleep(15)
-                await self.login()
+                asyncio.create_task(self.start())
 
     async def login(self):
         """
@@ -133,7 +133,8 @@ class NavilinkConnect():
             self.client.onOnline=self._on_online
             await self.loop.run_in_executor(None,self.client.connect)
             await self._subscribe_to_topics()
-            await self._get_channel_info()
+            if not len(self.channels):
+                await self._get_channel_info()
             await self._get_channel_status_all(wait_for_response = True)
             self.last_poll = datetime.now()
         else:
@@ -153,17 +154,26 @@ class NavilinkConnect():
             self.last_poll = datetime.now()
             time_delta = (self.last_poll - pre_poll).total_seconds()
         if not self.shutting_down:
-            raise Exception("Connection to AWS IOT Navilink server lost, attempting to reconnect...")
+            raise Exception("Polling of AWS IOT Navilink server completed")
 
     async def _server_connection_lost(self):
         await self.disconnect_event.wait()
         self.disconnect_event.clear()
-        await asyncio.sleep(5)
-        raise Exception("Lost connection to Navilink, reconnecting...")
+        raise Exception("Disconnected from Navilink server...")
 
-    async def disconnect(self):
+    async def _refresh_connection(self):
+        now = datetime.now()
+        target_time = datetime(now.year, now.month, now.day, 2, 00, 0)
+        if now > target_time:
+            # If it's already past 2 am, wait until tomorrow
+            target_time += timedelta(days=1)
+        delta = (target_time - now).total_seconds()
+        await asyncio.sleep(delta)
+        await self.disconnect(shutting_down=False)
+
+    async def disconnect(self,shutting_down=True):
         if self.client and self.connected:
-            self.shutting_down = True
+            self.shutting_down = shutting_down
             await self.loop.run_in_executor(None,self.client.disconnect)
 
     def _on_online(self):
@@ -173,7 +183,6 @@ class NavilinkConnect():
         self.connected = False
         if not self.shutting_down:
             self.disconnect_event.set()
-        _LOGGER.warning("Connection to Navilink server lost")
 
     async def async_subscribe(self,topic,QoS=1,callback=None):
         def subscribe():
