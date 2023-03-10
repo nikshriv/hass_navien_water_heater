@@ -163,7 +163,7 @@ class NavilinkConnect():
 
     async def _refresh_connection(self):
         now = datetime.now()
-        target_time = datetime(now.year, now.month, now.day, 2, 00, 0)
+        target_time = datetime(now.year, now.month, now.day, 2, 0, 0)
         if now > target_time:
             # If it's already past 2 am, wait until tomorrow
             target_time += timedelta(days=1)
