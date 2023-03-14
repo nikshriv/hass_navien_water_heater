@@ -46,12 +46,22 @@ class NavilinkConnect():
 
     async def start(self):
         if self.polling_interval > 0:
-            await self.login()
-            asyncio.create_task(self._start())
-            if len(self.channels) > 0:
-                return self.channels
-            else:
-                raise Exception("No Navien devices found with the given credentials")
+            valid_user = True
+            while not self.connected and valid_user and not self.shutting_down:
+                try:
+                    await self.login()
+                except (aiohttp.exceptions.ClientConnectorError,UnableToConnect) as err:
+                    _LOGGER.error(err)
+                    await asyncio.sleep(15)
+                except UserNotFound as err:
+                    _LOGGER.error(err)
+                    valid_user=False
+                else:
+                    asyncio.create_task(self._start())
+                    if len(self.channels) > 0:
+                        return self.channels
+                    else:
+                        raise NoNavienDevices("No Navien devices found with the given credentials")
         else:
             return await self.login()
 
@@ -84,13 +94,15 @@ class NavilinkConnect():
             async with session.post(NavilinkConnect.navienWebServer + "/user/sign-in", json={"userId": self.userId, "password": self.passwd}) as response:
                 # If an error occurs this will raise it, otherwise it calls get_device and returns after device is obtained from the server
                 if response.status != 200:
-                    raise Exception("Login error, please try again")
+                    raise UnableToConnect("Connection error during login, trying to connect again in 15s")
                 response_data = await response.json()
+                if response_data.get('msg','') == "USER_NOT_FOUND":
+                    raise UserNotFound("Unable to log in with given credentials")
                 try:
                     response_data["data"]
                     self.user_info = response_data["data"]
                 except:
-                    raise Exception("Error: Unexpected problem with user data")
+                    raise NoResponseData("Error: Unexpected problem with user data")
                 
                 return await self._get_device_list()
 
@@ -100,14 +112,14 @@ class NavilinkConnect():
             async with session.post(NavilinkConnect.navienWebServer + "/device/list", json={"offset":0,"count":20,"userId":self.userId}) as response:
                 # If an error occurs this will raise it, otherwise it returns the gateway list.
                 if response.status != 200:
-                    raise Exception("Unable to retrieve device list")
+                    raise UnableToConnect("Connection error while retrieving device list, trying to connect again in 15s")
                 response_data = await response.json()
                 try:
                     response_data["data"]
                     device_info_list = response_data["data"]
                     self.device_info = device_info_list[self.device_index]
                 except:
-                    raise Exception("Error: Unexpected problem with retrieving device list")
+                    raise NoResponseData("Unexpected problem with while retrieving device list")
                 
                 if self.polling_interval > 0:
                     await self._connect_aws_mqtt()
@@ -138,7 +150,7 @@ class NavilinkConnect():
             await self._get_channel_status_all(wait_for_response = True)
             self.last_poll = datetime.now()
         else:
-            raise Exception("Error: Please log in first")
+            raise NoAccessKey("Missing Access key, Secret key, or Session token")
 
     async def _poll_mqtt_server(self):
         time_delta = 0
@@ -154,12 +166,12 @@ class NavilinkConnect():
             self.last_poll = datetime.now()
             time_delta = (self.last_poll - pre_poll).total_seconds()
         if not self.shutting_down:
-            raise Exception("Polling of AWS IOT Navilink server completed")
+            raise PollingError("Polling of AWS IOT Navilink server completed")
 
     async def _server_connection_lost(self):
         await self.disconnect_event.wait()
         self.disconnect_event.clear()
-        raise Exception("Disconnected from Navilink server...")
+        raise DisconnectEvent("Disconnected from Navilink server...")
 
     async def _refresh_connection(self):
         now = datetime.now()
@@ -235,7 +247,7 @@ class NavilinkConnect():
         self.response_events[session_id] = asyncio.Event()
         await self.async_publish(topic=topic,payload=payload,session_id=session_id)
         if len(self.channels) == 0:
-            raise Exception("Unable to get channel information")
+            raise NoChannelInformation("Unable to get channel information")
 
     async def _get_channel_status_all(self,wait_for_response=False):
         for channel in self.channels.values():
@@ -606,27 +618,6 @@ class Messages:
             "sessionID": ""
         }
 
-class ControlType(enum.Enum):
-    UNKNOWN = 0
-    CHANNEL_INFORMATION = 1
-    STATE = 2
-    TREND_SAMPLE = 3
-    TREND_MONTH = 4
-    TREND_YEAR = 5
-    ERROR_CODE = 6
-
-
-class ChannelUse(enum.Enum):
-    UNKNOWN = 0
-    CHANNEL_1_USE = 1
-    CHANNEL_2_USE = 2
-    CHANNEL_1_2_USE = 3
-    CHANNEL_3_USE = 4
-    CHANNEL_1_3_USE = 5
-    CHANNEL_2_3_USE = 6
-    CHANNEL_1_2_3_USE = 7
-
-
 class DeviceSorting(enum.Enum):
     NO_DEVICE = 0
     NPE = 1
@@ -651,80 +642,26 @@ class TemperatureType(enum.Enum):
     CELSIUS = 1
     FAHRENHEIT = 2
 
+class UnableToConnect(Exception):
+    """Unable to connect to Navien Server Error"""
 
-class OnDemandFlag(enum.Enum):
-    UNKNOWN = 0
-    ON = 1
-    OFF = 2
-    WARMUP = 3
+class UserNotFound(Exception):
+    """Bad User Credentials Error"""
 
+class NoNavienDevices(Exception):
+    """No Navien Devices Found Error"""
 
-class HeatingControl(enum.Enum):
-    UNKNOWN = 0
-    SUPPLY = 1
-    RETURN = 2
-    OUTSIDE_CONTROL = 3
+class NoResponseData(Exception):
+    """No Data in Response"""
 
+class PollingError(Exception):
+    """Error during polling"""
 
-class WWSDFlag(enum.Enum):
-    OK = False
-    FAIL = True
+class DisconnectEvent(Exception):
+    """Server disconnected"""
 
+class NoChannelInformation(Exception):
+    """No Channel Information"""
 
-class WWSDMask(enum.Enum):
-    WWSDFLAG = 0x01
-    COMMERCIAL_LOCK = 0x02
-    HOTWATER_POSSIBILITY = 0x04
-    RECIRCULATION_POSSIBILITY = 0x08
-
-
-class CommercialLockFlag(enum.Enum):
-    OK = False
-    LOCK = True
-
-
-class NFBWaterFlag(enum.Enum):
-    OFF = False
-    ON = True
-
-
-class RecirculationFlag(enum.Enum):
-    OFF = False
-    ON = True
-
-
-class HighTemperature(enum.Enum):
-    TEMPERATURE_60 = 0
-    TEMPERATURE_83 = 1
-
-
-class OnOFFFlag(enum.Enum):
-    UNKNOWN = 0
-    ON = 1
-    OFF = 2
-
-
-class DayOfWeek(enum.Enum):
-    UN_KNOWN = 0
-    SUN = 1
-    MON = 2
-    TUE = 3
-    WED = 4
-    THU = 5
-    FRI = 6
-    SAT = 7
-
-
-class ControlSorting(enum.Enum):
-    INFO = 1
-    CONTROL = 2
-
-
-class DeviceControl(enum.Enum):
-    POWER = 1
-    HEAT = 2
-    WATER_TEMPERATURE = 3
-    HEATING_WATER_TEMPERATURE = 4
-    ON_DEMAND = 5
-    WEEKLY = 6
-    RECIRCULATION_TEMPERATURE = 7
+class NoAccessKey(Exception):
+    """Access key, Secret key, or Session token missing"""
