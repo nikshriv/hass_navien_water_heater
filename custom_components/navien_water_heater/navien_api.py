@@ -50,12 +50,12 @@ class NavilinkConnect():
             while not self.connected and valid_user and not self.shutting_down:
                 try:
                     await self.login()
-                except (aiohttp.exceptions.ClientConnectorError,UnableToConnect) as err:
-                    _LOGGER.error(err)
-                    await asyncio.sleep(15)
-                except UserNotFound as err:
+                except (UserNotFound,UnableToConnect,NoResponseData) as err:
                     _LOGGER.error(err)
                     valid_user=False
+                except Exception as e:
+                    _LOGGER.error("Connection error during start up: " +str(e))
+                    await asyncio.sleep(15)
                 else:
                     asyncio.create_task(self._start())
                     if len(self.channels) > 0:
@@ -83,6 +83,7 @@ class NavilinkConnect():
                 task.cancel()     
             if not self.shutting_down:
                 _LOGGER.warning("Connection to AWS IOT Navilink server reset, reconnecting in 15 seconds")
+                self.connected = False
                 await asyncio.sleep(15)
                 asyncio.create_task(self.start())
 
@@ -94,7 +95,7 @@ class NavilinkConnect():
             async with session.post(NavilinkConnect.navienWebServer + "/user/sign-in", json={"userId": self.userId, "password": self.passwd}) as response:
                 # If an error occurs this will raise it, otherwise it calls get_device and returns after device is obtained from the server
                 if response.status != 200:
-                    raise UnableToConnect("Connection error during login, trying to connect again in 15s")
+                    raise UnableToConnect("Unexpected response during login")
                 response_data = await response.json()
                 if response_data.get('msg','') == "USER_NOT_FOUND":
                     raise UserNotFound("Unable to log in with given credentials")
@@ -102,24 +103,27 @@ class NavilinkConnect():
                     response_data["data"]
                     self.user_info = response_data["data"]
                 except:
-                    raise NoResponseData("Error: Unexpected problem with user data")
+                    raise NoResponseData("Unexpected problem while retrieving user data")
                 
                 return await self._get_device_list()
 
     async def _get_device_list(self):
+        """
+        Get list of devices for the given user credentials
+        """
         headers = {"Authorization":self.user_info.get("token",{}).get("accessToken","")}
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.post(NavilinkConnect.navienWebServer + "/device/list", json={"offset":0,"count":20,"userId":self.userId}) as response:
                 # If an error occurs this will raise it, otherwise it returns the gateway list.
                 if response.status != 200:
-                    raise UnableToConnect("Connection error while retrieving device list, trying to connect again in 15s")
+                    raise UnableToConnect("Unexpected response while retrieving device list")
                 response_data = await response.json()
                 try:
                     response_data["data"]
                     device_info_list = response_data["data"]
                     self.device_info = device_info_list[self.device_index]
                 except:
-                    raise NoResponseData("Unexpected problem with while retrieving device list")
+                    raise NoResponseData("Unexpected problem while retrieving device list")
                 
                 if self.polling_interval > 0:
                     await self._connect_aws_mqtt()
@@ -192,31 +196,41 @@ class NavilinkConnect():
         self.connected = True
 
     def _on_offline(self):
-        self.connected = False
         if not self.shutting_down:
             self.disconnect_event.set()
 
     async def async_subscribe(self,topic,QoS=1,callback=None):
-        def subscribe():
-            self.client.subscribe(topic=topic,QoS=QoS,callback=callback)
+        try:
+            def subscribe():
+                self.client.subscribe(topic=topic,QoS=QoS,callback=callback)
 
-        async with self.client_lock:
-            await self.loop.run_in_executor(None,subscribe)
+            async with self.client_lock:
+                await self.loop.run_in_executor(None,subscribe)
+        except Exception as e:
+            _LOGGER.debug("Error occurred in async_subscribe: " + str(e))
+            await self.disconnect(shutting_down=False)           
 
     async def async_publish(self,topic,payload,QoS=1,session_id=""):
-        def publish():
-            self.client.publish(topic=topic,payload=json.dumps(payload,separators=(',',':')),QoS=QoS)
-        
-        async with self.client_lock:
-            await self.loop.run_in_executor(None,publish)
+        try:
+            def publish():
+                self.client.publish(topic=topic,payload=json.dumps(payload,separators=(',',':')),QoS=QoS)
+                                
+            async with self.client_lock:
+                await self.loop.run_in_executor(None,publish)
 
-        if response_event :=  self.response_events.get(session_id,None):
-            try:
-                await asyncio.wait_for(response_event.wait(),timeout=self.polling_interval)
-            except:
-                pass
-            response_event.clear()
-            self.response_events.pop(session_id)
+            if response_event :=  self.response_events.get(session_id,None):
+                try:
+                    await asyncio.wait_for(response_event.wait(),timeout=self.polling_interval)
+                except:
+                    pass
+                response_event.clear()
+                self.response_events.pop(session_id)
+        except Exception as e:
+            _LOGGER.debug("Error occurred in async_publish: " + str(e))
+            if response_event :=  self.response_events.get(session_id,None):
+                response_event.clear()
+                self.response_events.pop(session_id)
+            await self.disconnect(shutting_down=False)   
 
 
     async def _subscribe_to_topics(self):
@@ -393,6 +407,7 @@ class NavilinkChannel:
     def convert_channel_status(self,channel_status):
         channel_status["powerStatus"] = channel_status["powerStatus"] == 1
         channel_status["onDemandUseFlag"] = channel_status["onDemandUseFlag"] == 1
+        channel_status["avgCalorie"] = channel_status["avgCalorie"]/2.0
         if self.channel_info.get("temperatureType",2) == TemperatureType.CELSIUS.value:
             if channel_status["unitType"] in [DeviceSorting.NFC.value,DeviceSorting.NCB_H.value,DeviceSorting.NFB.value,DeviceSorting.NVW.value,]:
                 GIUFactor = 100
@@ -650,6 +665,9 @@ class UserNotFound(Exception):
 
 class NoNavienDevices(Exception):
     """No Navien Devices Found Error"""
+
+class NoNetworkConnection(Exception):
+    """Network is unavailable"""
 
 class NoResponseData(Exception):
     """No Data in Response"""

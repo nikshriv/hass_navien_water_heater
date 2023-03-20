@@ -16,7 +16,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 
 STEP_SET_POLLING_INTERVAL = vol.Schema(
     {
-        vol.Required("polling_interval",default=10): vol.All(vol.Coerce(int), vol.Range(min=10, max=120))
+        vol.Required("polling_interval",default=15): vol.All(vol.Coerce(int), vol.Range(min=10, max=120))
     }
 )
 

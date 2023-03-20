@@ -29,22 +29,24 @@ _LOGGER=logging.getLogger(__name__)
 
 class GenericSensorDescription():
     """Class to convert values from metric to imperial and vice versa"""
-    def __init__(self, state_class, native_unit_of_measurement, name, conversion_factor) -> None:
+    def __init__(self, state_class, native_unit_of_measurement, name, conversion_factor, device_class=None) -> None:
         self.state_class = state_class
         self.native_unit_of_measurement = native_unit_of_measurement
         self.name = name
         self.conversion_factor = conversion_factor
+        self.device_class = device_class
 
     def convert(self,val):
         return round(val*self.conversion_factor, 1)
 
 class TempSensorDescription():
     """Class to convert temperature values"""
-    def __init__(self, state_class, native_unit_of_measurement, name, convert_to) -> None:
+    def __init__(self, state_class, native_unit_of_measurement, name, convert_to, device_class=None) -> None:
         self.state_class = state_class
         self.native_unit_of_measurement = native_unit_of_measurement
         self.name = name
         self.convert_to = convert_to
+        self.device_class = device_class
 
     def convert(self,temp):
         if self.convert_to == UnitOfTemperature.CELSIUS:
@@ -66,7 +68,8 @@ def get_description(hass_units,navien_units,sensor_type):
             state_class = SensorStateClass.TOTAL_INCREASING,
             native_unit_of_measurement=VOLUME_CUBIC_METERS if hass_units == "metric" else VOLUME_CUBIC_FEET,
             name="Cumulative Gas Use",
-            conversion_factor = 1 if hass_units == navien_units else 35.3147 if hass_units == "us_customary" else 0.0283168732
+            conversion_factor = 1 if hass_units == navien_units else 35.3147 if hass_units == "us_customary" else 0.0283168732,
+            device_class=SensorDeviceClass.GAS
         ),
         "DHWFlowRate": GenericSensorDescription(
             state_class = SensorStateClass.MEASUREMENT,
@@ -226,6 +229,11 @@ class NavienSensor(SensorEntity):
     def unique_id(self):
         """Return the unique ID of the entity."""
         return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + str(self.channel.channel_number) + str(self.unit_info.get("unitNumber","")) + self.sensor_type
+
+    @property
+    def device_class(self) -> SensorDeviceClass:
+        """Return the class of this entity."""
+        return self.sensor_description.device_class
 
     @property
     def state_class(self) -> SensorStateClass:
