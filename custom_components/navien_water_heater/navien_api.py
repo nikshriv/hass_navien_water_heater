@@ -163,7 +163,7 @@ class NavilinkConnect():
                 interval = self.polling_interval - time_delta
             else:
                 interval = 0.1
-            await asyncio.sleep(self.polling_interval - time_delta)
+            await asyncio.sleep(interval)
             pre_poll = datetime.now()
             if not self.client_lock.locked():
                 await self._get_channel_status_all()
@@ -333,7 +333,7 @@ class NavilinkConnect():
         channel_status = response.get("response",{}).get("channelStatus",{})
         session_id = response.get("sessionID","unknown")
         if channel := self.channels.get(channel_status.get("channelNumber",0),None):
-            channel.update_channel_status(channel_status.get("channel",{}))
+            self.loop.call_soon_threadsafe(channel.update_channel_status,  channel_status.get("channel",{}))
         if response_event := self.response_events.get(session_id,None):
             response_event.set()
         
