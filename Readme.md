@@ -45,4 +45,185 @@ Here is an example of a card that can be used to monitor and control a water hea
 
 ![image](https://github.com/GitHubGoody/hass_navien_water_heater/assets/46235745/42b851b3-7a48-4b8e-89b0-b4285a8396bb)
 
+<details><summary>Code</summary>
+   
+```
+- type: custom:stack-in-card
+  mode: vertical
+  cards:
+    - type: custom:stack-in-card
+      mode: horizontal
+      cards:
+        - type: tile
+          entity: water_heater.house
+          features:
+            - type: target-temperature
+          tap_action:
+            action: toggle
+          icon_tap_action:
+            action: toggle
+        - type: custom:mushroom-entity-card
+          entity: switch.water_heater_recirculation
+          icon_color: lime
+          name: Recirculation
+          layout: vertical
+          card_mod:
+            style: |
+              mushroom-shape-icon {
+                {% if states('switch.water_heater_recirculation') == 'on' %}
+                  --shape-animation: spin 1.5s linear infinite;
+                {% else %}
+                {% endif %}       
+              }
+          tap_action:
+            action: call-service
+            service: switch.turn_on
+            target:
+              entity_id: switch.water_heater_recirculation
+          icon_tap_action:
+            action: call-service
+            service: switch.turn_on
+            target:
+              entity_id: switch.water_heater_recirculation
+        - type: custom:stack-in-card
+          mode: vertical
+          cards:
+           - type: custom:apexcharts-card
+             graph_span: 3h
+             header:
+               show: true
+               title: Water Heater
+             yaxis:
+               - id: Temperature
+                 opposite: true
+                 decimals: 0
+                 min: 70
+                 max: 140
+                 apex_config:
+                   tickAmount: 7
+                   title:
+                     text: Temperature
+                     style:
+                       color: blue
+               - id: Flow Rate
+                 opposite: true
+                 decimals: 0
+                 min: 0
+                 max: 4
+                 apex_config:
+                   tickAmount: 4
+                   title:
+                     text: Flow Rate
+                     style:
+                       color: green
+             apex_config:
+               labels:
+                 useSeriesColors: true
+               chart:
+                 height: 300px
+               annotations:
+                 position: front
+                 yaxis:
+                   - y: 114 # Adjust this...
+                     y2: 116 # ...and this according to your water heater's setpoint. If anyone can make this automatically update, please share ;-)
+                     strokeDashArray: 0
+                     borderColor: 'red'
+                     borderWidth: 0
+                     fillColor: 'red'
+                     opacity: 0.1
+                     offsetX: 0
+                     offsetY: -3
+                     width: '100%'
+                     yAxisIndex: 0
+                     label:
+                       text: 'Setpoint'
+                       borderColor: '#c2c2c2'
+                       borderWidth: 1
+                       borderRadius: 2
+                       textAnchor: 'start'
+                       position: 'left'
+                       offsetX: 0
+                       offsetY: 0
+                       style:
+                         background: 'red'
+                         color: '#c2c2c2'
+                         fontSize: '12px'
+                         fontWeight: 400
+                         padding:
+                           left: 5
+                           right: 5
+                           top: 0
+                           bottom: 0
+             series:
+               - entity: switch.water_heater_power
+                 name: Power
+                 yaxis_id: Temperature
+                 type: area
+                 curve: stepline
+                 extend_to: now
+                 color: green
+                 stroke_width: 0
+                 opacity: 0.25
+                 transform: 'return x === ''on'' ? 72 : 70;'
+                 show:
+                   in_header: false
+                   legend_value: false
+               - entity: sensor.water_heater_flow_rate
+                 name: Flow Rate
+                 yaxis_id: Flow Rate
+                 color: green
+                 stroke_width: 1
+                 curve: stepline
+               - entity: switch.water_heater_recirculation
+                 name: Recirculation
+                 yaxis_id: Temperature
+                 type: area
+                 curve: stepline
+                 extend_to: now
+                 color: lime
+                 stroke_width: 0
+                 opacity: 1.00
+                 transform: 'return x === ''on'' ? 74 : 70;'
+                 show:
+                   in_header: false
+                   legend_value: false
+               - entity: sensor.water_heater_inlet_temperature
+                 name: Inlet
+                 yaxis_id: Temperature
+                 color: lightblue
+                 stroke_width: 2
+                 curve: straight
+               - entity: sensor.water_heater_outlet_temperature
+                 name: Outlet
+                 yaxis_id: Temperature
+                 color: red
+                 stroke_width: 2
+                 curve: straight
+```
+
+</details>
+
+## Sample automation
+A simple automation that will run recirculation at the top and bottom of each hour from 5 AM to 10 PM.
+
+```
+alias: Water Heater Recirculation
+description: "Water heater recirculation at the top and bottom of each hour from 5 AM to 10 PM."
+trigger:
+  - platform: time_pattern
+    minutes: "0"
+  - platform: time_pattern
+    minutes: "30"
+condition:
+  - condition: time
+    after: "04:55:00"
+    before: "22:05:00"
+    enabled: true
+action:
+  - service: switch.turn_on
+    target:
+      entity_id: switch.water_heater_recirculation
+mode: single
+```
+
 https://www.buymeacoffee.com/nikshriv
