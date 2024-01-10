@@ -8,10 +8,9 @@ from .navien_api import (TemperatureType)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
-    VOLUME_CUBIC_METERS,
-    VOLUME_CUBIC_FEET,
-    POWER_BTU_PER_HOUR,
+    UnitOfPower,
     UnitOfTemperature,
+    UnitOfVolume,
 )
 
 POWER_KCAL_PER_HOUR = 'kcal/hr'
@@ -60,13 +59,13 @@ def get_description(hass_units,navien_units,sensor_type):
     return {
         "gasInstantUsage": GenericSensorDescription(
             state_class = SensorStateClass.MEASUREMENT,
-            native_unit_of_measurement=POWER_KCAL_PER_HOUR if hass_units == "metric" else POWER_BTU_PER_HOUR,
+            native_unit_of_measurement=POWER_KCAL_PER_HOUR if hass_units == "metric" else UnitOfPower.BTU_PER_HOUR,
             name="Current Gas Use",
             conversion_factor = 1 if hass_units == navien_units else 3.96567 if hass_units == "us_customary" else 0.2521646022
         ),
         "accumulatedGasUsage": GenericSensorDescription(
             state_class = SensorStateClass.TOTAL_INCREASING,
-            native_unit_of_measurement=VOLUME_CUBIC_METERS if hass_units == "metric" else VOLUME_CUBIC_FEET,
+            native_unit_of_measurement=UnitOfVolume.CUBIC_METERS if hass_units == "metric" else UnitOfVolume.CUBIC_FEET,
             name="Cumulative Gas Use",
             conversion_factor = 1 if hass_units == navien_units else 35.3147 if hass_units == "us_customary" else 0.0283168732,
             device_class=SensorDeviceClass.GAS

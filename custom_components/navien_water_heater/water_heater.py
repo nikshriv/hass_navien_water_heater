@@ -3,11 +3,10 @@ import logging
 
 from homeassistant.components.water_heater import (
     WaterHeaterEntity,
+    WaterHeaterEntityFeature,
     STATE_GAS,
-    SUPPORT_AWAY_MODE,
-    SUPPORT_TARGET_TEMPERATURE,
-    SUPPORT_OPERATION_MODE,
 )
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, STATE_OFF, UnitOfTemperature
 from homeassistant.core import HomeAssistant
@@ -19,7 +18,7 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 SUPPORT_FLAGS = (
-    SUPPORT_AWAY_MODE | SUPPORT_TARGET_TEMPERATURE | SUPPORT_OPERATION_MODE
+    WaterHeaterEntityFeature.AWAY_MODE | WaterHeaterEntityFeature.TARGET_TEMPERATURE | WaterHeaterEntityFeature.OPERATION_MODE
 )
 
 
