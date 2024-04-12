@@ -320,7 +320,7 @@ class NavilinkConnect():
     def get_session_id(self):
         return str(int(round((datetime.utcnow() - datetime(1970, 1, 1)).total_seconds()*1000)))
 
-    def handle_channel_info(self, client, userdata, message):
+    def async_handle_channel_info(self, client, userdata, message):
         response = json.loads(message.payload)
         channel_info = response.get("response",{})
         session_id = response.get("sessionID","unknown")
@@ -328,7 +328,10 @@ class NavilinkConnect():
         if response_event := self.response_events.get(session_id,None):
             response_event.set()
 
-    def handle_channel_status(self, client, userdata, message):
+    def handle_channel_info(self, client, userdata, message):
+        self.loop.call_soon_threadsafe(self.async_handle_channel_info, client, userdata, message)
+
+    def async_handle_channel_status(self, client, userdata, message):
         response = json.loads(message.payload)
         channel_status = response.get("response",{}).get("channelStatus",{})
         session_id = response.get("sessionID","unknown")
@@ -336,7 +339,9 @@ class NavilinkConnect():
             channel.update_channel_status(channel_status.get("channel",{}))
         if response_event := self.response_events.get(session_id,None):
             response_event.set()
-        
+
+    def handle_channel_status(self, client, userdata, message):
+        self.loop.call_soon_threadsafe(self.async_handle_channel_status, client, userdata, message)
 
     def handle_weekly_schedule(self, client, userdata, message):
         _LOGGER.info("WEEKLY SCHEDULE: " + message.payload.decode('utf-8') + '\n')
