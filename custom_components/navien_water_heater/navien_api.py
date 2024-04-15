@@ -163,7 +163,7 @@ class NavilinkConnect():
                 interval = self.polling_interval - time_delta
             else:
                 interval = 0.1
-            await asyncio.sleep(self.polling_interval - time_delta)
+            await asyncio.sleep(interval)
             pre_poll = datetime.now()
             if not self.client_lock.locked():
                 await self._get_channel_status_all()
