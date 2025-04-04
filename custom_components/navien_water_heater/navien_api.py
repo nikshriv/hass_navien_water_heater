@@ -142,7 +142,7 @@ class NavilinkConnect():
             self.client.configureEndpoint(hostName= 'a1t30mldyslmuq-ats.iot.us-east-1.amazonaws.com', portNumber= 443)
             self.client.configureUsernamePassword(username='?SDK=Android&Version=2.16.12', password=None)
             self.client.configureLastWill(topic = self.topics.app_connection(), payload = json.dumps(self.messages.last_will(),separators=(',',':')), QoS=1, retain=False)
-            self.client.configureCredentials(self.aws_cert_path)
+            await self.loop.run_in_executor(None,self.client.configureCredentials,self.aws_cert_path)
             self.client.configureIAMCredentials(AWSAccessKeyID=accessKeyId, AWSSecretAccessKey=secretKey, AWSSessionToken=sessionToken)
             self.client.configureConnectDisconnectTimeout(5)
             self.client.onOffline=self._on_offline
