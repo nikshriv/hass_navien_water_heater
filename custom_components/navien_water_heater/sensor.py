@@ -103,9 +103,28 @@ async def async_setup_entry(
         navien_units = "us_customary" if channel.channel_info.get("temperatureType",2) == TemperatureType.FAHRENHEIT.value else "metric"
         hass_units = "us_customary" if hass.config.units.temperature_unit == UnitOfTemperature.FAHRENHEIT else "metric"
         sensors.append(NavienAvgCalorieSensor(navilink, channel))
-        for unit_info in channel.channel_status.get("unitInfo",{}).get("unitStatusList",[]):
+
+        # Fix for cascade configurations: create sensors for all expected units based on unitCount
+        # from channel_info, not just units present in unitStatusList at startup.
+        # See: https://github.com/nikshriv/hass_navien_water_heater/issues/45
+        unit_count = channel.channel_info.get("unitCount", 1)
+        unit_status_list = channel.channel_status.get("unitInfo", {}).get("unitStatusList", [])
+
+        # Build a map of available unit data by unit number
+        unit_data_map = {u.get("unitNumber"): u for u in unit_status_list}
+
+        for unit_num in range(1, unit_count + 1):
+            # Use actual data if available, otherwise create placeholder
+            if unit_num in unit_data_map:
+                unit_info = unit_data_map[unit_num]
+            else:
+                # Placeholder unit_info - will be populated when data arrives via update_state
+                unit_info = {"unitNumber": unit_num}
+                _LOGGER.info("Creating sensors for unit %d with placeholder data (cascade mode)", unit_num)
+
             for sensor_type in ["gasInstantUsage","accumulatedGasUsage","DHWFlowRate","currentInletTemp","currentOutletTemp"]:
                 sensors.append(NavienSensor(hass, navilink, channel, unit_info, sensor_type, get_description(hass_units,navien_units,sensor_type)))
+
     async_add_entities(sensors)
 
 class NavienAvgCalorieSensor(SensorEntity):
@@ -248,4 +267,9 @@ class NavienSensor(SensorEntity):
     @property
     def native_value(self) -> StateType:
         """Return the value reported by the sensor."""
-        return self.sensor_description.convert(self.unit_info.get(self.sensor_type,0))
+        raw_value = self.unit_info.get(self.sensor_type)
+        if raw_value is None:
+            # No data yet for this unit (cascade mode - waiting for data)
+            return None
+        return self.sensor_description.convert(raw_value)
+
