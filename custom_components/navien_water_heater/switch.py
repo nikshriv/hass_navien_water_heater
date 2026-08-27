@@ -19,6 +19,7 @@ async def async_setup_entry(
         if channel.channel_info.get("onDemandUse",2) == 1:
             devices.append(NavienOnDemandSwitchEntity(navilink, channel))
         devices.append(NavienPowerSwitchEntity(navilink, channel))        
+        devices.append(NavienWeeklyControlSwitchEntity(navilink, channel))
     async_add_entities(devices)
 
 
@@ -73,6 +74,63 @@ class NavienOnDemandSwitchEntity(SwitchEntity):
     async def async_turn_off(self):
         """Turn Off Hot Button."""
         await self.channel.set_hot_button_state(False)
+
+
+class NavienWeeklyControlSwitchEntity(SwitchEntity):
+    """Define a Navien Weekly Control Switch Entity."""
+
+    def __init__(self, navilink, channel):
+        self.navilink = navilink
+        self.channel = channel
+
+    def __init__(self, navilink, channel):
+        self.navilink = navilink
+        self.channel = channel
+
+    async def async_added_to_hass(self) -> None:
+        """Run when this Entity has been added to HA."""
+        self.channel.register_callback(self.async_write_ha_state)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Entity being removed from hass."""
+        self.channel.deregister_callback(self.async_write_ha_state)
+
+    @property
+    def available(self):
+        """Return if the the device is online or not."""
+        return self.channel.is_available()
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device registry information for this entity."""
+        return DeviceInfo(
+            identifiers = {(DOMAIN, self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "_" + str(self.channel.channel_number))},
+            manufacturer = "Navien",
+            name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown") + " CH" + str(self.channel.channel_number)
+        )
+
+    @property
+    def name(self):
+        """Return the name of the entity."""
+        return self.navilink.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " Weekly Control CH" + str(self.channel.channel_number)
+
+    @property
+    def unique_id(self):
+        """Return the unique ID of the entity."""
+        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + str(self.channel.channel_number) + "weekly_control" 
+
+    @property
+    def is_on(self):
+        """Return the current On Demand state."""
+        return self.channel.channel_status.get("weeklyControl",False)
+
+    async def async_turn_on(self):
+        """Turn On Weekly Control."""
+        await self.channel.set_weekly_state(True)
+
+    async def async_turn_off(self):
+        """Turn Off Weekly Control."""
+        await self.channel.set_weekly_state(False)
 
 
 class NavienPowerSwitchEntity(SwitchEntity):

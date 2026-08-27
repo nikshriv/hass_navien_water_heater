@@ -301,6 +301,18 @@ class NavilinkConnect():
         await self.async_publish(topic=topic,payload=payload,session_id=session_id)
         await self._get_channel_status(channel_number)
 
+    async def _weekly_command(self,state,channel_number):
+        state_num = 2
+        if state:
+            state_num = 1
+        topic = self.topics.control()
+        payload = self.messages.weekly(state_num, channel_number)
+        session_id = self.get_session_id()
+        payload["sessionID"] = session_id
+        self.response_events[session_id] = asyncio.Event()
+        await self.async_publish(topic=topic,payload=payload,session_id=session_id)
+        await self._get_channel_status(channel_number)
+
     async def _hot_button_command(self,state,channel_number):
         state_num = 2
         if state:
@@ -425,6 +437,13 @@ class NavilinkChannel:
             self.publish_update()
             self.waiting_for_response = False
 
+    async def set_weekly_state(self,state):
+        if not self.waiting_for_response:
+            self.waiting_for_response = True
+            await self.hub._weekly_command(state,self.channel_number)
+            self.publish_update()
+            self.waiting_for_response = False
+
     async def set_hot_button_state(self,state):
         if not self.waiting_for_response:
             self.waiting_for_response = True
@@ -443,6 +462,7 @@ class NavilinkChannel:
         channel_status["powerStatus"] = channel_status["powerStatus"] == 1
         channel_status["onDemandUseFlag"] = channel_status["onDemandUseFlag"] == 1
         channel_status["avgCalorie"] = channel_status["avgCalorie"]/2.0
+        channel_status["weeklyControl"] = channel_status["weeklyControl"] == 1
         if self.channel_info.get("temperatureType",2) == TemperatureType.CELSIUS.value:
             if channel_status["unitType"] in [DeviceSorting.NFC.value,DeviceSorting.NCB_H.value,DeviceSorting.NFB.value,DeviceSorting.NVW.value,]:
                 GIUFactor = 100
@@ -550,7 +570,10 @@ class Topics:
         return self.req + 'status/weeklyschedule'
 
     def weekly_schedule_res(self):
-        return self.res + 'weeklyschedule'
+        return self.res + 'res/weeklyschedule'
+
+    def weekly_schedule_control(self):
+        return self.req + 'control/weeklyschedule' 
 
     def simple_trend_sub(self):
         return self.req + 'res/simpletrend'
@@ -636,6 +659,16 @@ class Messages:
             "request":{"additionalValue":self.additional_value,"command":33554433,"control":{"channelNumber":channel_number,"mode":"power","param":[state]},"deviceType":self.device_type,"macAddress":self.mac_address},
             "requestTopic": self.topics.control(),
             "responseTopic": self.topics.channel_status_res(),
+            "sessionID": ""
+        }
+
+    def weekly(self, state, channel_number):
+        return {
+            "clientID": self.client_id,
+            "protocolVersion":1,
+            "request":{"additionalValue":self.additional_value,"command":33554438,"control":{"channelNumber":channel_number,"weeklyControl":state},"deviceType":self.device_type,"macAddress":self.mac_address},
+            "requestTopic": self.topics.weekly_schedule_control(),
+            "responseTopic": self.topics.weekly_schedule_res(),
             "sessionID": ""
         }
 
