@@ -108,8 +108,9 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
     def current_temperature(self):
         """Return the current hot water temperature."""
         unit_list = self.channel.channel_status.get("unitInfo",{}).get("unitStatusList",[])
-        if len(unit_list) > 0:
-            return round(sum([unit_info.get("currentOutletTemp") for unit_info in unit_list])/len(unit_list))
+        temps = [u.get("currentOutletTemp") for u in unit_list if u.get("currentOutletTemp") is not None]
+        if temps:
+            return round(sum(temps) / len(temps))
         else:
             _LOGGER.warning("No channel status information available for " + self.name)
 

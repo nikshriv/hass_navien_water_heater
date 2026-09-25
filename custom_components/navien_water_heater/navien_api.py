@@ -410,7 +410,14 @@ class NavilinkChannel:
             self.callbacks.pop(self.callbacks.index(callback))
 
     def update_channel_status(self,channel_status):
-        self.channel_status = self.convert_channel_status(channel_status)
+        converted = self.convert_channel_status(channel_status)
+        for unit_info in converted.get("unitInfo", {}).get("unitStatusList", []) or []:
+            if (unit_number := unit_info.get("unitNumber", None)) is not None:
+                self.unit_list[unit_number] = unit_info
+        if self.unit_list:
+            converted.setdefault("unitInfo", {})["unitStatusList"] = [self.unit_list[n] for n in sorted(self.unit_list)]
+            _LOGGER.debug("Channel %s: Active cascade units: %s", self.channel_number, list(self.unit_list.keys()))
+        self.channel_status = converted
         if not self.waiting_for_response:
             self.publish_update()
 
@@ -467,12 +474,17 @@ class NavilinkChannel:
                 channel_status["DHWSettingTemp"] = round(channel_status["DHWSettingTemp"] / 2.0, 1)
                 channel_status["avgInletTemp"] = round(channel_status["avgInletTemp"] / 2.0, 1)
                 channel_status["avgOutletTemp"] = round(channel_status["avgOutletTemp"] / 2.0, 1)            
-                for i in range(channel_status.get("unitCount",0)):
-                    channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] = round((channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] * GIUFactor)/ 10.0, 1)
-                    channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] = round(channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] / 10.0, 1)
-                    channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] = round(channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] / 10.0, 1)
-                    channel_status["unitInfo"]["unitStatusList"][i]["currentOutletTemp"] = round(channel_status["unitInfo"]["unitStatusList"][i]["currentOutletTemp"] / 2.0, 1)
-                    channel_status["unitInfo"]["unitStatusList"][i]["currentInletTemp"] = round(channel_status["unitInfo"]["unitStatusList"][i]["currentInletTemp"] / 2.0, 1)
+                for unit in channel_status.get("unitInfo", {}).get("unitStatusList", []):
+                    if "gasInstantUsage" in unit:
+                        unit["gasInstantUsage"] = round((unit["gasInstantUsage"] * GIUFactor) / 10.0, 1)
+                    if "accumulatedGasUsage" in unit:
+                        unit["accumulatedGasUsage"] = round(unit["accumulatedGasUsage"] / 10.0, 1)
+                    if "DHWFlowRate" in unit:
+                        unit["DHWFlowRate"] = round(unit["DHWFlowRate"] / 10.0, 1)
+                    if "currentOutletTemp" in unit:
+                        unit["currentOutletTemp"] = round(unit["currentOutletTemp"] / 2.0, 1)
+                    if "currentInletTemp" in unit:
+                        unit["currentInletTemp"] = round(unit["currentInletTemp"] / 2.0, 1)
         elif self.channel_info.get("temperatureType",2) == TemperatureType.FAHRENHEIT.value:
             if channel_status["unitType"] in [DeviceSorting.NFC.value,DeviceSorting.NCB_H.value,DeviceSorting.NFB.value,DeviceSorting.NVW.value,]:
                 GIUFactor = 10
@@ -494,10 +506,13 @@ class NavilinkChannel:
                 DeviceSorting.CAS_NFB.value,
                 DeviceSorting.CAS_NVW.value,
             ]:
-                for i in range(channel_status.get("unitCount",0)):
-                    channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] = round(channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] * GIUFactor * 3.968, 1)
-                    channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] = round(channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] * 35.314667 / 10.0, 1)
-                    channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] = round(channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] / 37.85, 1)
+                for unit in channel_status.get("unitInfo", {}).get("unitStatusList", []):
+                    if "gasInstantUsage" in unit:
+                        unit["gasInstantUsage"] = round(unit["gasInstantUsage"] * GIUFactor * 3.968, 1)
+                    if "accumulatedGasUsage" in unit:
+                        unit["accumulatedGasUsage"] = round(unit["accumulatedGasUsage"] * 35.314667 / 10.0, 1)
+                    if "DHWFlowRate" in unit:
+                        unit["DHWFlowRate"] = round(unit["DHWFlowRate"] / 37.85, 1)
 
         return channel_status
 
