@@ -60,6 +60,8 @@ class NavilinkConnect():
                     valid_user=False
                 except Exception as e:
                     _LOGGER.error("Connection error during start up: " +str(e))
+                    # Otherwise the loop sees connected=True and exits with nothing set up.
+                    await self._close_client()
                     await asyncio.sleep(15)
                 else:
                     if len(self.channels) == 0:
@@ -67,20 +69,23 @@ class NavilinkConnect():
                     if not all(channel.channel_status for channel in self.channels.values()):
                         # The platforms only create per-unit sensors from the status present
                         # at setup, so continuing now would leave them missing until a reload.
-                        await self._abort_start()
+                        self.shutting_down = True
+                        await self._close_client()
                         raise NoChannelStatus("Navien server did not return channel status during setup")
                     asyncio.create_task(self._start())
                     return self.channels
         else:
             return await self.login()
 
-    async def _abort_start(self):
-        """Close the connection opened by a start attempt that cannot complete."""
-        self.shutting_down = True
-        try:
-            await self.loop.run_in_executor(None,self.client.disconnect)
-        except Exception as e:
-            _LOGGER.debug("Error closing connection after failed start: %s: %s", type(e).__name__, e)
+    async def _close_client(self):
+        """Close the connection opened by a start attempt that did not complete."""
+        if self.client:
+            self.client.onOffline = lambda: None
+            try:
+                await self.loop.run_in_executor(None,self.client.disconnect)
+            except Exception as e:
+                _LOGGER.debug("Error closing connection after failed start: %s: %s", type(e).__name__, e)
+        self.connected = False
 
     async def _start(self):
         if not self.shutting_down:
