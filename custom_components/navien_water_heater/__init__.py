@@ -2,8 +2,10 @@
 from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from .navien_api import (
-    NavilinkConnect
+    NavilinkConnect,
+    NoChannelStatus
 )
 from .const import DOMAIN
 import logging
@@ -22,7 +24,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         aws_path = os.path.join(aws_path,subdir)
     navilink = NavilinkConnect(userId=entry.data.get("username",""), passwd=entry.data.get("password",""), polling_interval=entry.data.get("polling_interval",15), device_index=entry.data.get("device_index",0), aws_cert_path=os.path.join(aws_path,"AmazonRootCA1.pem"))
     hass.data[DOMAIN][entry.entry_id] = navilink
-    await navilink.start()    
+    try:
+        await navilink.start()
+    except NoChannelStatus as err:
+        hass.data[DOMAIN].pop(entry.entry_id)
+        raise ConfigEntryNotReady(str(err)) from err
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
