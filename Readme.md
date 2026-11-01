@@ -36,6 +36,19 @@ The preheat/recirculation settings (i.e. parameters) are inconsistently named be
 2. There are DIP switches on the Hot Button PCB (see pg 34 of the A2 installation manual). [Some users](https://community.home-assistant.io/t/navien-hot-water-heater-navilink/330044/47) find they must set DIP switch 2 to ON for the recirculation function to heat to the setpoint. This setting changes the behavior of both of these settings as described on pg 102 of the [A2 installation manual](https://www.navieninc.com/downloads/npe-2-installation-and-operation-manual-en).
 3. If recirculation does not stay on long enough after Hot Button activation, try increasing to a much higher pipe length.
 
+## Combi boilers and boilers (space heating)
+For units that support space heating (e.g. NFC combi boilers), the integration adds the following sensors in addition to the hot water sensors. They are only created when the unit reports a space heating temperature range, so water heaters are unaffected.
+
+| Sensor | Source field | Notes |
+| ------- | ------- | ------- |
+| Heating Supply Temp | `currentSupplyTemp` | Matches "Heating Supply Temp." in the NaviLink app |
+| Heating Return Temp | `currentReturnTemp` | Matches "Heating Return Temp." in the NaviLink app |
+| Heating Setpoint | `heatSettingTemp` | Matches "Heating Set Temp." in the NaviLink app. When outdoor reset is enabled the app shows this as "AUTO" and the boiler follows its reset curve instead; the sensor then has the attribute `outdoor_reset: true` |
+| Outdoor Temp | `outdoorTemperature` | From the boiler's outdoor sensor, if installed |
+| Operation Mode (diagnostic) | `operationMode` | Raw value. Observed: `0` idle, `16` space heating demand. Other values are shown as-is |
+
+Note that on at least some combi models NaviLink reports Current Gas Use as 0 while the unit is firing for space heating (the NaviLink app shows the same).
+
 ## Sample card
 Here is an example of a card that can be used to monitor and control a water heater including recirculation. It uses the following custom cards:
 - [ApexCharts](https://github.com/RomRider/apexcharts-card)
