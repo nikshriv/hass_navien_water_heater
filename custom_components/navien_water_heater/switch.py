@@ -48,6 +48,7 @@ class NavienOnDemandSwitchEntity(SwitchEntity):
         return DeviceInfo(
             identifiers = {(DOMAIN, self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "_" + str(self.channel.channel_number))},
             manufacturer = "Navien",
+            via_device_id = self.navilink.navilink_device_id,
             name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown") + " CH" + str(self.channel.channel_number)
         )
 
@@ -101,6 +102,7 @@ class NavienPowerSwitchEntity(SwitchEntity):
         return DeviceInfo(
             identifiers = {(DOMAIN, self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "_" + str(self.channel.channel_number))},
             manufacturer = "Navien",
+            via_device_id = self.navilink.navilink_device_id,
             name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown") + " CH" + str(self.channel.channel_number)
         )
 
