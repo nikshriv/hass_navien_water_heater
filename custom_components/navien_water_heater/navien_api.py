@@ -38,6 +38,8 @@ class NavilinkConnect():
         self.shutting_down = False
         self.user_info = None
         self.device_info = None
+        # Device registry id of the NaviLink module, set by async_setup_entry
+        self.navilink_device_id = None
         self.client = None
         self.client_id = ""
         self.topics = None
