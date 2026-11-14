@@ -14,6 +14,10 @@ _LOGGER = logging.getLogger(__name__)
 # interval (twice). Responses normally arrive in 1-3 seconds.
 RESPONSE_TIMEOUT = 10
 
+# Space heating fields reported by combi boilers / boilers (NFC, NCB, NHB, NFB...)
+SPACE_HEATING_CHANNEL_TEMPS = ("heatSettingTemp", "avgSupplyTemp", "avgReturnTemp", "outdoorTemperature")
+SPACE_HEATING_UNIT_TEMPS = ("currentSupplyTemp", "currentReturnTemp")
+
 class NavilinkConnect():
 
     # The Navien server.
@@ -466,13 +470,21 @@ class NavilinkChannel:
             ]:
                 channel_status["DHWSettingTemp"] = round(channel_status["DHWSettingTemp"] / 2.0, 1)
                 channel_status["avgInletTemp"] = round(channel_status["avgInletTemp"] / 2.0, 1)
-                channel_status["avgOutletTemp"] = round(channel_status["avgOutletTemp"] / 2.0, 1)            
+                channel_status["avgOutletTemp"] = round(channel_status["avgOutletTemp"] / 2.0, 1)
+                # Space heating (combi/boiler) fields use the same half-degree encoding
+                for key in SPACE_HEATING_CHANNEL_TEMPS:
+                    if key in channel_status:
+                        channel_status[key] = round(channel_status[key] / 2.0, 1)
                 for i in range(channel_status.get("unitCount",0)):
                     channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] = round((channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] * GIUFactor)/ 10.0, 1)
                     channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] = round(channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] / 10.0, 1)
                     channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] = round(channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] / 10.0, 1)
                     channel_status["unitInfo"]["unitStatusList"][i]["currentOutletTemp"] = round(channel_status["unitInfo"]["unitStatusList"][i]["currentOutletTemp"] / 2.0, 1)
                     channel_status["unitInfo"]["unitStatusList"][i]["currentInletTemp"] = round(channel_status["unitInfo"]["unitStatusList"][i]["currentInletTemp"] / 2.0, 1)
+                    unit_status = channel_status["unitInfo"]["unitStatusList"][i]
+                    for key in SPACE_HEATING_UNIT_TEMPS:
+                        if key in unit_status:
+                            unit_status[key] = round(unit_status[key] / 2.0, 1)
         elif self.channel_info.get("temperatureType",2) == TemperatureType.FAHRENHEIT.value:
             if channel_status["unitType"] in [DeviceSorting.NFC.value,DeviceSorting.NCB_H.value,DeviceSorting.NFB.value,DeviceSorting.NVW.value,]:
                 GIUFactor = 10
@@ -505,6 +517,9 @@ class NavilinkChannel:
         if channel_info.get("temperatureType",2) == TemperatureType.CELSIUS.value:
             channel_info["setupDHWTempMin"] = round(channel_info["setupDHWTempMin"]/ 2.0, 1)
             channel_info["setupDHWTempMax"] = round(channel_info["setupDHWTempMax"]/ 2.0, 1)
+            for key in ("setupHeatTempMin", "setupHeatTempMax"):
+                if key in channel_info:
+                    channel_info[key] = round(channel_info[key] / 2.0, 1)
 
         return channel_info
         

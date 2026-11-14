@@ -100,6 +100,40 @@ def get_description(hass_units,navien_units,sensor_type):
             name="Hot Water Temp",
             convert_to = "None" if hass_units == navien_units else UnitOfTemperature.FAHRENHEIT if hass_units == "us_customary" else UnitOfTemperature.CELSIUS
         ),
+        "currentSupplyTemp": TempSensorDescription(
+            state_class = SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement=UnitOfTemperature.CELSIUS if hass_units == "metric" else UnitOfTemperature.FAHRENHEIT,
+            name="Heating Supply Temp",
+            convert_to = "None" if hass_units == navien_units else UnitOfTemperature.FAHRENHEIT if hass_units == "us_customary" else UnitOfTemperature.CELSIUS,
+            device_class=SensorDeviceClass.TEMPERATURE
+        ),
+        "currentReturnTemp": TempSensorDescription(
+            state_class = SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement=UnitOfTemperature.CELSIUS if hass_units == "metric" else UnitOfTemperature.FAHRENHEIT,
+            name="Heating Return Temp",
+            convert_to = "None" if hass_units == navien_units else UnitOfTemperature.FAHRENHEIT if hass_units == "us_customary" else UnitOfTemperature.CELSIUS,
+            device_class=SensorDeviceClass.TEMPERATURE
+        ),
+        "heatSettingTemp": TempSensorDescription(
+            state_class = SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement=UnitOfTemperature.CELSIUS if hass_units == "metric" else UnitOfTemperature.FAHRENHEIT,
+            name="Heating Setpoint",
+            convert_to = "None" if hass_units == navien_units else UnitOfTemperature.FAHRENHEIT if hass_units == "us_customary" else UnitOfTemperature.CELSIUS,
+            device_class=SensorDeviceClass.TEMPERATURE
+        ),
+        "outdoorTemperature": TempSensorDescription(
+            state_class = SensorStateClass.MEASUREMENT,
+            native_unit_of_measurement=UnitOfTemperature.CELSIUS if hass_units == "metric" else UnitOfTemperature.FAHRENHEIT,
+            name="Outdoor Temp",
+            convert_to = "None" if hass_units == navien_units else UnitOfTemperature.FAHRENHEIT if hass_units == "us_customary" else UnitOfTemperature.CELSIUS,
+            device_class=SensorDeviceClass.TEMPERATURE
+        ),
+        "operationMode": RawSensorDescription(
+            state_class = None,
+            native_unit_of_measurement = None,
+            name = "Operation Mode",
+            entity_category = EntityCategory.DIAGNOSTIC
+        ),
         "errorCode": RawSensorDescription(
             state_class = None,
             native_unit_of_measurement = None,
@@ -113,6 +147,26 @@ def get_description(hass_units,navien_units,sensor_type):
             entity_category = EntityCategory.DIAGNOSTIC
         )
     }.get(sensor_type,{})
+
+SPACE_HEATING_UNIT_SENSORS = ["currentSupplyTemp", "currentReturnTemp", "operationMode"]
+SPACE_HEATING_CHANNEL_SENSORS = ["heatSettingTemp", "outdoorTemperature"]
+
+# channelInfo.heatControl value observed on an NFC combi configured for outdoor reset.
+# In this mode the NaviLink app shows the heating set temperature as "AUTO" and the
+# boiler targets a supply temperature from its reset curve, not heatSettingTemp.
+HEAT_CONTROL_OUTDOOR_RESET = 3
+
+# unitStatusList[].operationMode values observed on an NFC combi. Other values are reported raw.
+# The boiler prioritizes DHW, so space heating (16) and DHW (32) are never reported together.
+OPERATION_MODE_DESCRIPTIONS = {
+    0: "Idle",
+    16: "Space heating demand",
+    32: "Domestic hot water demand",
+}
+
+def supports_space_heating(channel):
+    """Combi boilers and boilers report a space heating setpoint range; water heaters report 0."""
+    return channel.channel_info.get("setupHeatTempMax", 0) > 0
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -130,6 +184,12 @@ async def async_setup_entry(
         for unit_info in channel.channel_status.get("unitInfo",{}).get("unitStatusList",[]):
             for sensor_type in ["gasInstantUsage","accumulatedGasUsage","DHWFlowRate","currentInletTemp","currentOutletTemp","errorCode","subErrorCode"]:
                 sensors.append(NavienSensor(hass, navilink, channel, unit_info, sensor_type, get_description(hass_units,navien_units,sensor_type)))
+            if supports_space_heating(channel):
+                for sensor_type in SPACE_HEATING_UNIT_SENSORS:
+                    sensors.append(NavienSensor(hass, navilink, channel, unit_info, sensor_type, get_description(hass_units,navien_units,sensor_type)))
+        if supports_space_heating(channel):
+            for sensor_type in SPACE_HEATING_CHANNEL_SENSORS:
+                sensors.append(NavienChannelSensor(hass, navilink, channel, sensor_type))
     async_add_entities(sensors)
 
 class NavienAvgCalorieSensor(SensorEntity):
@@ -248,6 +308,9 @@ class NavienSensor(SensorEntity):
     @property
     def extra_state_attributes(self):
         """Return the human-readable description for the current error code, if any."""
+        if self.sensor_type == "operationMode":
+            description = OPERATION_MODE_DESCRIPTIONS.get(self.unit_info.get("operationMode"))
+            return {"description": description} if description else None
         if self.sensor_type != "errorCode":
             return None
         description = get_error_description(self.unit_info.get("errorCode", 0), self.unit_info.get("subErrorCode", 0))
@@ -286,3 +349,84 @@ class NavienSensor(SensorEntity):
     def native_value(self) -> StateType:
         """Return the value reported by the sensor."""
         return self.sensor_description.convert(self.unit_info.get(self.sensor_type,0))
+
+class NavienChannelSensor(SensorEntity):
+    """Sensor for a channel-level value (shared by all units on the channel)."""
+
+    def __init__(self, hass, navilink, channel, sensor_type):
+        self.hass = hass
+        self.navilink = navilink
+        self.channel = channel
+        self.sensor_type = sensor_type
+        self.sensor_description = self._get_description()
+
+    def _get_description(self):
+        hass_units = "us_customary" if self.hass.config.units.temperature_unit == UnitOfTemperature.FAHRENHEIT else "metric"
+        navien_units = "us_customary" if self.channel.channel_info.get("temperatureType",2) == TemperatureType.FAHRENHEIT.value else "metric"
+        return get_description(hass_units, navien_units, self.sensor_type)
+
+    async def async_added_to_hass(self) -> None:
+        """Run when this Entity has been added to HA."""
+        self.channel.register_callback(self.update_state)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Entity being removed from hass."""
+        self.channel.deregister_callback(self.update_state)
+
+    def update_state(self):
+        self.sensor_description = self._get_description()
+        self.async_write_ha_state()
+
+    @property
+    def available(self):
+        """Return if the the sensor is online or not."""
+        return self.channel.is_available()
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device registry information for this entity."""
+        return DeviceInfo(
+            identifiers = {(DOMAIN, self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "_" + str(self.channel.channel_number))},
+            manufacturer = "Navien",
+            name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown") + " CH" + str(self.channel.channel_number),
+        )
+
+    @property
+    def name(self):
+        """Return the name of the entity."""
+        return "CH" + str(self.channel.channel_number) + " " + self.sensor_description.name
+
+    @property
+    def unique_id(self):
+        """Return the unique ID of the entity."""
+        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + str(self.channel.channel_number) + self.sensor_type
+
+    @property
+    def device_class(self) -> SensorDeviceClass:
+        """Return the class of this entity."""
+        return self.sensor_description.device_class
+
+    @property
+    def state_class(self) -> SensorStateClass:
+        """Return the state class of this entity, if any."""
+        return self.sensor_description.state_class
+
+    @property
+    def native_unit_of_measurement(self):
+        """Return the unit of measurement of this entity, if any."""
+        return self.sensor_description.native_unit_of_measurement
+
+    @property
+    def extra_state_attributes(self):
+        """Flag when the setpoint is overridden by outdoor reset (shown as AUTO in the app)."""
+        if self.sensor_type != "heatSettingTemp":
+            return None
+        return {"outdoor_reset": self.channel.channel_info.get("heatControl") == HEAT_CONTROL_OUTDOOR_RESET}
+
+    @property
+    def native_value(self) -> StateType:
+        """Return the value reported by the sensor."""
+        value = self.channel.channel_status.get(self.sensor_type)
+        if value is None:
+            return None
+        return self.sensor_description.convert(value)
