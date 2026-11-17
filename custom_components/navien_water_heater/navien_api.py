@@ -9,6 +9,11 @@ import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
 
+# Timeout for request/response correlation waits. These previously reused
+# polling_interval, so a missed response blocked setup for the full poll
+# interval (twice). Responses normally arrive in 1-3 seconds.
+RESPONSE_TIMEOUT = 10
+
 class NavilinkConnect():
 
     # The Navien server.
@@ -207,7 +212,7 @@ class NavilinkConnect():
             async with self.client_lock:
                 await self.loop.run_in_executor(None,subscribe)
         except Exception as e:
-            _LOGGER.debug("Error occurred in async_subscribe: " + str(e))
+            _LOGGER.warning("Error occurred in async_subscribe (topic %s): %s: %s", topic, type(e).__name__, e)
             await self.disconnect(shutting_down=False)           
 
     async def async_publish(self,topic,payload,QoS=1,session_id=""):
@@ -220,13 +225,13 @@ class NavilinkConnect():
 
             if response_event :=  self.response_events.get(session_id,None):
                 try:
-                    await asyncio.wait_for(response_event.wait(),timeout=self.polling_interval)
+                    await asyncio.wait_for(response_event.wait(),timeout=RESPONSE_TIMEOUT)
                 except:
                     pass
                 response_event.clear()
                 self.response_events.pop(session_id)
         except Exception as e:
-            _LOGGER.debug("Error occurred in async_publish: " + str(e))
+            _LOGGER.warning("Error occurred in async_publish (topic %s): %s: %s", topic, type(e).__name__, e)
             if response_event :=  self.response_events.get(session_id,None):
                 response_event.clear()
                 self.response_events.pop(session_id)
@@ -332,12 +337,38 @@ class NavilinkConnect():
     def get_session_id(self):
         return str(int(round((datetime.utcnow() - datetime(1970, 1, 1)).total_seconds()*1000)))
 
+    def _resolve_response_event(self, raw_session_id):
+        """Return the pending response event matching an echoed sessionID.
+
+        The NaviLink cloud echoes the request sessionID truncated from
+        epoch-milliseconds to epoch-seconds (a request tagged
+        '1780760417880' is echoed back as '1780760417'), so an exact
+        dictionary lookup never matches and every response wait previously
+        timed out at the full polling_interval even though the response
+        had already arrived and been processed. Try an exact match first
+        (in case the echo behavior ever changes), then fall back to
+        seconds-precision matching.
+        """
+        session_id = str(raw_session_id)
+        if event := self.response_events.get(session_id, None):
+            return event
+        try:
+            echoed_seconds = int(session_id)
+        except (TypeError, ValueError):
+            return None
+        for key, event in self.response_events.items():
+            try:
+                if int(key) // 1000 == echoed_seconds:
+                    return event
+            except (TypeError, ValueError):
+                continue
+        return None
+
     def async_handle_channel_info(self, client, userdata, message):
         response = json.loads(message.payload)
         channel_info = response.get("response",{})
-        session_id = response.get("sessionID","unknown")
         self.channels = {channel.get("channelNumber",0):NavilinkChannel(channel.get("channelNumber",0),channel.get("channel",{}),self) for channel in channel_info.get("channelInfo",{}).get("channelList",[])}
-        if response_event := self.response_events.get(session_id,None):
+        if response_event := self._resolve_response_event(response.get("sessionID","unknown")):
             response_event.set()
 
     def handle_channel_info(self, client, userdata, message):
@@ -346,10 +377,9 @@ class NavilinkConnect():
     def async_handle_channel_status(self, client, userdata, message):
         response = json.loads(message.payload)
         channel_status = response.get("response",{}).get("channelStatus",{})
-        session_id = response.get("sessionID","unknown")
         if channel := self.channels.get(channel_status.get("channelNumber",0),None):
             channel.update_channel_status(channel_status.get("channel",{}))
-        if response_event := self.response_events.get(session_id,None):
+        if response_event := self._resolve_response_event(response.get("sessionID","unknown")):
             response_event.set()
 
     def handle_channel_status(self, client, userdata, message):

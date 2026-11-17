@@ -18,10 +18,10 @@ FLOW_GALLONS_PER_MIN = 'gal/min'
 FLOW_LITERS_PER_MIN = 'liters/min'
 
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
-from .const import DOMAIN
+from .const import DOMAIN, get_error_description
 from asyncio import sleep
 import logging
 _LOGGER=logging.getLogger(__name__)
@@ -55,6 +55,18 @@ class TempSensorDescription():
         else:
             return temp
 
+class RawSensorDescription():
+    """Class for values that need no conversion"""
+    def __init__(self, state_class, native_unit_of_measurement, name, device_class=None, entity_category=None) -> None:
+        self.state_class = state_class
+        self.native_unit_of_measurement = native_unit_of_measurement
+        self.name = name
+        self.device_class = device_class
+        self.entity_category = entity_category
+
+    def convert(self,val):
+        return val
+
 def get_description(hass_units,navien_units,sensor_type):    
     return {
         "gasInstantUsage": GenericSensorDescription(
@@ -87,6 +99,18 @@ def get_description(hass_units,navien_units,sensor_type):
             native_unit_of_measurement=UnitOfTemperature.CELSIUS if hass_units == "metric" else UnitOfTemperature.FAHRENHEIT,
             name="Hot Water Temp",
             convert_to = "None" if hass_units == navien_units else UnitOfTemperature.FAHRENHEIT if hass_units == "us_customary" else UnitOfTemperature.CELSIUS
+        ),
+        "errorCode": RawSensorDescription(
+            state_class = None,
+            native_unit_of_measurement = None,
+            name = "Error Code",
+            entity_category = EntityCategory.DIAGNOSTIC
+        ),
+        "subErrorCode": RawSensorDescription(
+            state_class = None,
+            native_unit_of_measurement = None,
+            name = "Sub Error Code",
+            entity_category = EntityCategory.DIAGNOSTIC
         )
     }.get(sensor_type,{})
 
@@ -104,7 +128,7 @@ async def async_setup_entry(
         hass_units = "us_customary" if hass.config.units.temperature_unit == UnitOfTemperature.FAHRENHEIT else "metric"
         sensors.append(NavienAvgCalorieSensor(navilink, channel))
         for unit_info in channel.channel_status.get("unitInfo",{}).get("unitStatusList",[]):
-            for sensor_type in ["gasInstantUsage","accumulatedGasUsage","DHWFlowRate","currentInletTemp","currentOutletTemp"]:
+            for sensor_type in ["gasInstantUsage","accumulatedGasUsage","DHWFlowRate","currentInletTemp","currentOutletTemp","errorCode","subErrorCode"]:
                 sensors.append(NavienSensor(hass, navilink, channel, unit_info, sensor_type, get_description(hass_units,navien_units,sensor_type)))
     async_add_entities(sensors)
 
@@ -215,6 +239,19 @@ class NavienSensor(SensorEntity):
             manufacturer = "Navien",
             name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown") + " CH" + str(self.channel.channel_number),
         )
+
+    @property
+    def entity_category(self):
+        """Return the entity category of this entity, if any."""
+        return getattr(self.sensor_description, "entity_category", None)
+
+    @property
+    def extra_state_attributes(self):
+        """Return the human-readable description for the current error code, if any."""
+        if self.sensor_type != "errorCode":
+            return None
+        description = get_error_description(self.unit_info.get("errorCode", 0), self.unit_info.get("subErrorCode", 0))
+        return {"description": description} if description else None
 
     @property
     def name(self):
