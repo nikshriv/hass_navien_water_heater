@@ -49,7 +49,7 @@ class NavilinkConnect():
         self.client_lock = asyncio.Lock()
         self.last_poll = None
 
-    async def start(self):
+    async def start(self, retry: bool = True):
         if self.polling_interval > 0:
             valid_user = True
             while not self.connected and valid_user and not self.shutting_down:
@@ -57,16 +57,22 @@ class NavilinkConnect():
                     await self.login()
                 except (UserNotFound,UnableToConnect,NoResponseData) as err:
                     _LOGGER.error(err)
+                    await self._cleanup_failed_connect()
+                    if not retry:
+                        raise
                     valid_user=False
                 except Exception as e:
-                    _LOGGER.error("Connection error during start up: " +str(e))
+                    _LOGGER.error("Connection error during start up: %s", e)
+                    await self._cleanup_failed_connect()
+                    if not retry:
+                        raise
                     await asyncio.sleep(15)
                 else:
-                    asyncio.create_task(self._start())
                     if len(self.channels) > 0:
+                        asyncio.create_task(self._start())
                         return self.channels
-                    else:
-                        raise NoNavienDevices("No Navien devices found with the given credentials")
+                    await self._cleanup_failed_connect()
+                    raise NoNavienDevices("No Navien devices found with the given credentials")
         else:
             return await self.login()
 
@@ -126,9 +132,32 @@ class NavilinkConnect():
                 try:
                     response_data["data"]
                     device_info_list = response_data["data"]
+                    gateways_summary = [
+                        {
+                            "index": idx,
+                            "deviceName": dev.get("deviceInfo", {}).get("deviceName"),
+                            "macAddress": dev.get("deviceInfo", {}).get("macAddress"),
+                            "deviceType": dev.get("deviceInfo", {}).get("deviceType"),
+                            "homeSeq": dev.get("deviceInfo", {}).get("homeSeq"),
+                        }
+                        for idx, dev in enumerate(device_info_list)
+                    ]
+                    _LOGGER.debug("Discovered %d NaviLink gateway(s): %s", len(device_info_list), gateways_summary)
                     self.device_info = device_info_list[self.device_index]
                 except:
                     raise NoResponseData("Unexpected problem while retrieving device list")
+
+                selected_info = self.device_info.get("deviceInfo", {})
+                _LOGGER.debug(
+                    "Selected gateway index=%s: deviceName=%s, macAddress=%s, deviceType=%s, homeSeq=%s, additionalValue=%s, userSeq=%s",
+                    self.device_index,
+                    selected_info.get("deviceName"),
+                    selected_info.get("macAddress"),
+                    selected_info.get("deviceType"),
+                    selected_info.get("homeSeq"),
+                    selected_info.get("additionalValue"),
+                    self.user_info.get("userInfo", {}).get("userSeq"),
+                )
                 
                 if self.polling_interval > 0:
                     await self._connect_aws_mqtt()
@@ -152,12 +181,19 @@ class NavilinkConnect():
             self.client.configureConnectDisconnectTimeout(5)
             self.client.onOffline=self._on_offline
             self.client.onOnline=self._on_online
+            self.disconnect_event.clear()
+            _LOGGER.debug("Connecting to AWS IoT MQTT endpoint (client_id=%s)", self.client_id)
             await self.loop.run_in_executor(None,self.client.connect)
-            await self._subscribe_to_topics()
-            if not len(self.channels):
-                await self._get_channel_info()
-            await self._get_channel_status_all(wait_for_response = True)
-            self.last_poll = datetime.now()
+            _LOGGER.debug("AWS IoT MQTT connect returned (connected=%s, existing_channels=%d)", self.connected, len(self.channels))
+            try:
+                await self._subscribe_to_topics()
+                if not len(self.channels):
+                    await self._get_channel_info()
+                await self._get_channel_status_all(wait_for_response = True)
+                self.last_poll = datetime.now()
+            except Exception:
+                await self._cleanup_failed_connect()
+                raise
         else:
             raise NoAccessKey("Missing Access key, Secret key, or Session token")
 
@@ -192,20 +228,50 @@ class NavilinkConnect():
         await asyncio.sleep(delta)
         await self.disconnect(shutting_down=False)
 
+    async def _cleanup_failed_connect(self):
+        """Disconnect any open MQTT client and reset connection state after a failed startup."""
+        prev_shutting_down = self.shutting_down
+        self.shutting_down = True
+        client = self.client
+        self.client = None
+        self.connected = False
+        if client is not None:
+            try:
+                await self.loop.run_in_executor(None, client.disconnect)
+            except Exception as err:
+                _LOGGER.debug("Error disconnecting MQTT client during cleanup: %s: %s", type(err).__name__, err)
+        self.disconnect_event.clear()
+        self.shutting_down = prev_shutting_down
+
     async def disconnect(self,shutting_down=True):
-        if self.client and self.connected:
-            self.shutting_down = shutting_down
-            await self.loop.run_in_executor(None,self.client.disconnect)
+        self.shutting_down = shutting_down
+        client = self.client
+        was_connected = self.connected
+        self.connected = False
+        if client and was_connected:
+            try:
+                await self.loop.run_in_executor(None, client.disconnect)
+            except Exception as err:
+                _LOGGER.debug("Error disconnecting MQTT client: %s: %s", type(err).__name__, err)
+            finally:
+                if shutting_down:
+                    self.client = None
+        elif shutting_down:
+            self.client = None
 
     def _on_online(self):
+        _LOGGER.debug("AWS IoT MQTT client online (client_id=%s)", self.client_id)
         self.connected = True
 
     def _on_offline(self):
+        _LOGGER.debug("AWS IoT MQTT client offline (client_id=%s, shutting_down=%s)", self.client_id, self.shutting_down)
+        self.connected = False
         if not self.shutting_down:
-            self.disconnect_event.set()
+            self.loop.call_soon_threadsafe(self.disconnect_event.set)
 
     async def async_subscribe(self,topic,QoS=1,callback=None):
         try:
+            _LOGGER.debug("Subscribing to MQTT topic %s (QoS=%s)", topic, QoS)
             def subscribe():
                 self.client.subscribe(topic=topic,QoS=QoS,callback=callback)
 
@@ -217,25 +283,42 @@ class NavilinkConnect():
 
     async def async_publish(self,topic,payload,QoS=1,session_id=""):
         try:
+            command = payload.get("request", {}).get("command") if isinstance(payload, dict) else None
+            effective_session_id = session_id or (payload.get("sessionID", "") if isinstance(payload, dict) else "")
+            response_topic = payload.get("responseTopic") if isinstance(payload, dict) else None
+            _LOGGER.debug(
+                "Publishing to MQTT topic %s (command=%s, sessionID=%s, responseTopic=%s)",
+                topic,
+                command,
+                effective_session_id,
+                response_topic,
+            )
             def publish():
                 self.client.publish(topic=topic,payload=json.dumps(payload,separators=(',',':')),QoS=QoS)
                                 
             async with self.client_lock:
                 await self.loop.run_in_executor(None,publish)
 
-            if response_event :=  self.response_events.get(session_id,None):
+            if response_event := self.response_events.get(session_id, None):
                 try:
                     await asyncio.wait_for(response_event.wait(),timeout=RESPONSE_TIMEOUT)
-                except:
-                    pass
+                except asyncio.TimeoutError:
+                    _LOGGER.debug(
+                        "Timed out after %ss waiting for response on topic %s (sessionID=%s)",
+                        RESPONSE_TIMEOUT,
+                        topic,
+                        session_id,
+                    )
+                else:
+                    _LOGGER.debug("Received response for topic %s (sessionID=%s)", topic, session_id)
                 response_event.clear()
-                self.response_events.pop(session_id)
+                self.response_events.pop(session_id, None)
         except Exception as e:
             _LOGGER.warning("Error occurred in async_publish (topic %s): %s: %s", topic, type(e).__name__, e)
-            if response_event :=  self.response_events.get(session_id,None):
+            if response_event := self.response_events.get(session_id, None):
                 response_event.clear()
-                self.response_events.pop(session_id)
-            await self.disconnect(shutting_down=False)   
+                self.response_events.pop(session_id, None)
+            await self.disconnect(shutting_down=False)
 
 
     async def _subscribe_to_topics(self):
@@ -264,7 +347,18 @@ class NavilinkConnect():
         session_id = self.get_session_id()
         payload["sessionID"] = session_id
         self.response_events[session_id] = asyncio.Event()
+        _LOGGER.debug(
+            "Requesting channel info on %s (expecting response on %s, sessionID=%s)",
+            topic,
+            payload.get("responseTopic"),
+            session_id,
+        )
         await self.async_publish(topic=topic,payload=payload,session_id=session_id)
+        _LOGGER.debug(
+            "Channel info request completed: discovered %d channel(s): %s",
+            len(self.channels),
+            list(self.channels.keys()),
+        )
         if len(self.channels) == 0:
             raise NoChannelInformation("Unable to get channel information")
 
@@ -353,10 +447,29 @@ class NavilinkConnect():
         return None
 
     def async_handle_channel_info(self, client, userdata, message):
-        response = json.loads(message.payload)
+        raw_payload = (
+            message.payload.decode("utf-8", errors="replace")
+            if isinstance(message.payload, (bytes, bytearray))
+            else str(message.payload)
+        )
+        _LOGGER.debug(
+            "Received channelinfo on topic %s: %s",
+            getattr(message, "topic", "unknown"),
+            raw_payload,
+        )
+        response = json.loads(raw_payload)
         channel_info = response.get("response",{})
         self.channels = {channel.get("channelNumber",0):NavilinkChannel(channel.get("channelNumber",0),channel.get("channel",{}),self) for channel in channel_info.get("channelInfo",{}).get("channelList",[])}
-        if response_event := self._resolve_response_event(response.get("sessionID","unknown")):
+        raw_session_id = response.get("sessionID","unknown")
+        response_event = self._resolve_response_event(raw_session_id)
+        _LOGGER.debug(
+            "Processed channelinfo (sessionID=%s, matched_event=%s, pending_sessions=%s, channels=%s)",
+            raw_session_id,
+            response_event is not None,
+            list(self.response_events.keys()),
+            list(self.channels.keys()),
+        )
+        if response_event:
             response_event.set()
 
     def handle_channel_info(self, client, userdata, message):
@@ -365,9 +478,23 @@ class NavilinkConnect():
     def async_handle_channel_status(self, client, userdata, message):
         response = json.loads(message.payload)
         channel_status = response.get("response",{}).get("channelStatus",{})
-        if channel := self.channels.get(channel_status.get("channelNumber",0),None):
-            channel.update_channel_status(channel_status.get("channel",{}))
-        if response_event := self._resolve_response_event(response.get("sessionID","unknown")):
+        channel_number = channel_status.get("channelNumber",0)
+        channel_data = channel_status.get("channel",{})
+        unit_numbers = [
+            u.get("unitNumber")
+            for u in channel_data.get("unitInfo", {}).get("unitStatusList", []) or []
+        ]
+        raw_session_id = response.get("sessionID","unknown")
+        _LOGGER.debug(
+            "Received channelstatus (channel=%s, sessionID=%s, unitCount=%s, units=%s)",
+            channel_number,
+            raw_session_id,
+            channel_data.get("unitCount"),
+            unit_numbers,
+        )
+        if channel := self.channels.get(channel_number,None):
+            channel.update_channel_status(channel_data)
+        if response_event := self._resolve_response_event(raw_session_id):
             response_event.set()
 
     def handle_channel_status(self, client, userdata, message):
