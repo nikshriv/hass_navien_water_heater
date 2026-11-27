@@ -130,17 +130,13 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
 
     async def async_set_temperature(self,**kwargs):
         """Set target water temperature"""
-        hass_units = "us_customary" if self.hass.config.units.temperature_unit == UnitOfTemperature.FAHRENHEIT else "metric"
-        navien_units = "us_customary" if self.channel.channel_info.get("temperatureType",2) == TemperatureType.FAHRENHEIT.value else "metric"
+        # Home Assistant's set_temperature service has already converted the
+        # requested value from the user's unit system to this entity's
+        # temperature unit, so no further unit conversion is needed here.
+        # NaviLink encodes Celsius setpoints in half-degree steps.
         target_temp = kwargs.get(ATTR_TEMPERATURE)
-        if hass_units == navien_units:
-            if self.temperature_unit == UnitOfTemperature.CELSIUS:
-                target_temp = round(2 * target_temp)
-        else:
-            if hass_units == "metric":
-                target_temp == round((target_temp*9/5) + 32)
-            else:
-                target_temp == round((target_temp-32)*10/9)
+        if self.temperature_unit == UnitOfTemperature.CELSIUS:
+            target_temp = round(2 * target_temp)
         await self.channel.set_temperature(target_temp)
 
 
