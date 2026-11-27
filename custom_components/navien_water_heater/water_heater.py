@@ -74,7 +74,7 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
         self.channel.deregister_callback(self.async_write_ha_state)
 
     @property
-    def temperature_unit(self):
+    def native_temperature_unit(self):
         """Return temperature unit."""
         temp_unit = UnitOfTemperature.CELSIUS
         if self.channel.channel_info["temperatureType"] == TemperatureType.FAHRENHEIT.value:
@@ -105,7 +105,7 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
         return [STATE_OFF, STATE_GAS]
     
     @property
-    def current_temperature(self):
+    def native_current_temperature(self):
         """Return the current hot water temperature."""
         unit_list = self.channel.channel_status.get("unitInfo",{}).get("unitStatusList",[])
         if len(unit_list) > 0:
@@ -114,7 +114,7 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
             _LOGGER.warning("No channel status information available for " + self.name)
 
     @property
-    def target_temperature(self):
+    def native_target_temperature(self):
         """Return the temperature we try to reach."""
         return self.channel.channel_status.get("DHWSettingTemp",0)
 
@@ -135,7 +135,7 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
         # temperature unit, so no further unit conversion is needed here.
         # NaviLink encodes Celsius setpoints in half-degree steps.
         target_temp = kwargs.get(ATTR_TEMPERATURE)
-        if self.temperature_unit == UnitOfTemperature.CELSIUS:
+        if self.native_temperature_unit == UnitOfTemperature.CELSIUS:
             target_temp = round(2 * target_temp)
         await self.channel.set_temperature(target_temp)
 
